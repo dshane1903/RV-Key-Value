@@ -54,3 +54,29 @@ func TestServerAppendEntriesDelegatesToNode(t *testing.T) {
 		t.Fatalf("log length = %d, want 1", got)
 	}
 }
+
+func TestServerAppendEntriesNotifiesElectionReset(t *testing.T) {
+	node, err := raft.NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+
+	reset := make(chan struct{}, 1)
+	server := NewServerWithAppendReset(node, reset)
+	resp, err := server.AppendEntries(context.Background(), &raftkvpb.AppendEntriesRequest{
+		Term:     1,
+		LeaderId: "n2",
+	})
+	if err != nil {
+		t.Fatalf("append entries: %v", err)
+	}
+	if !resp.GetSuccess() {
+		t.Fatal("success = false, want true")
+	}
+
+	select {
+	case <-reset:
+	default:
+		t.Fatal("append reset was not notified")
+	}
+}

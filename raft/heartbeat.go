@@ -38,26 +38,35 @@ func (n *RaftNode) RunHeartbeatLoop(ctx context.Context, client AppendClient, in
 }
 
 func (n *RaftNode) sendHeartbeats(ctx context.Context, client AppendClient) error {
-	term, prevLogIndex, prevLogTerm, commitIndex, peers := n.heartbeatSnapshot()
-	req := AppendEntriesRequest{
-		Term:         term,
-		LeaderID:     n.id,
-		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  prevLogTerm,
-		LeaderCommit: commitIndex,
-	}
+	peers := n.peerSnapshot()
 
 	for _, peerID := range peers {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
+		req, err := n.BuildAppendEntries(peerID)
+		if err != nil {
+			return err
+		}
 		resp, err := client.AppendEntries(ctx, peerID, req)
 		if err != nil {
 			continue
 		}
 
-		if _, err := n.stepDownForHigherTerm(resp.Term); err != nil {
+		steppedDown, err := n.stepDownForHigherTerm(resp.Term)
+		if err != nil || steppedDown {
+			return err
+		}
+		if resp.Success {
+			matchIndex := req.PrevLogIndex + uint64(len(req.Entries))
+			if err := n.RecordReplicationSuccess(peerID, matchIndex); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := n.RecordReplicationFailure(peerID); err != nil {
 			return err
 		}
 	}
@@ -65,9 +74,9 @@ func (n *RaftNode) sendHeartbeats(ctx context.Context, client AppendClient) erro
 	return nil
 }
 
-func (n *RaftNode) heartbeatSnapshot() (uint64, uint64, uint64, uint64, []string) {
+func (n *RaftNode) peerSnapshot() []string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	return n.currentTerm, lastLogIndex(n.log), lastLogTerm(n.log), n.commitIndex, append([]string(nil), n.peers...)
+	return append([]string(nil), n.peers...)
 }

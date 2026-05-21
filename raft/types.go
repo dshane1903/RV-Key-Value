@@ -65,10 +65,33 @@ func (e ErrLogInconsistent) Error() string {
 	return fmt.Sprintf("log is inconsistent at index %d term %d", e.PrevLogIndex, e.PrevLogTerm)
 }
 
+// ErrUnknownPeer is returned when leader replication state is missing a peer.
+type ErrUnknownPeer struct {
+	PeerID string
+}
+
+func (e ErrUnknownPeer) Error() string {
+	return fmt.Sprintf("unknown peer %q", e.PeerID)
+}
+
+// ErrNotLeader is returned when a write is proposed to a non-leader node.
+type ErrNotLeader struct {
+	State State
+}
+
+func (e ErrNotLeader) Error() string {
+	return fmt.Sprintf("node is %s, not leader", e.State)
+}
+
 // StableStore persists and restores Raft's durable state.
 type StableStore interface {
 	Save(PersistentState) error
 	Load() (PersistentState, error)
+}
+
+// StateMachine applies committed Raft log entries in order.
+type StateMachine interface {
+	Apply(LogEntry) error
 }
 
 // IsLogAtLeastUpToDate implements Raft's RequestVote log freshness comparison.

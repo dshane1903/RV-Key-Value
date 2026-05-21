@@ -203,6 +203,121 @@ func TestRequestVoteHigherTermStepsDownLeader(t *testing.T) {
 	}
 }
 
+func TestHandleAppendEntriesRejectsLowerTerm(t *testing.T) {
+	node, err := NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeFollower(3); err != nil {
+		t.Fatalf("become follower: %v", err)
+	}
+
+	resp, err := node.HandleAppendEntries(AppendEntriesRequest{
+		Term:     2,
+		LeaderID: "n2",
+	})
+	if err != nil {
+		t.Fatalf("append entries: %v", err)
+	}
+	if resp.Success {
+		t.Fatal("success = true, want false")
+	}
+	if resp.Term != 3 {
+		t.Fatalf("response term = %d, want 3", resp.Term)
+	}
+}
+
+func TestHandleAppendEntriesHigherTermStepsDownLeader(t *testing.T) {
+	store := &memoryStore{}
+	node, err := NewRaftNode("n1", nil, store)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeCandidate(); err != nil {
+		t.Fatalf("become candidate: %v", err)
+	}
+	if err := node.BecomeLeader(); err != nil {
+		t.Fatalf("become leader: %v", err)
+	}
+
+	resp, err := node.HandleAppendEntries(AppendEntriesRequest{
+		Term:     2,
+		LeaderID: "n2",
+	})
+	if err != nil {
+		t.Fatalf("append entries: %v", err)
+	}
+	if !resp.Success {
+		t.Fatal("success = false, want true")
+	}
+	if got := node.State(); got != Follower {
+		t.Fatalf("state = %s, want %s", got, Follower)
+	}
+	if got := store.state.CurrentTerm; got != 2 {
+		t.Fatalf("persisted term = %d, want 2", got)
+	}
+	if got := store.state.VotedFor; got != "" {
+		t.Fatalf("persisted votedFor = %q, want empty", got)
+	}
+}
+
+func TestHandleAppendEntriesRejectsInconsistentLog(t *testing.T) {
+	node, err := NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeFollower(2); err != nil {
+		t.Fatalf("become follower: %v", err)
+	}
+	if _, err := node.AppendLocal([]byte("set a 1")); err != nil {
+		t.Fatalf("append local: %v", err)
+	}
+
+	resp, err := node.HandleAppendEntries(AppendEntriesRequest{
+		Term:         2,
+		LeaderID:     "n2",
+		PrevLogIndex: 1,
+		PrevLogTerm:  99,
+		Entries:      []LogEntry{{Term: 2, Command: []byte("set b 2")}},
+	})
+	if err != nil {
+		t.Fatalf("append entries: %v", err)
+	}
+	if resp.Success {
+		t.Fatal("success = true, want false")
+	}
+	if len(node.Log()) != 1 {
+		t.Fatalf("log length = %d, want 1", len(node.Log()))
+	}
+}
+
+func TestHandleAppendEntriesAppendsEntries(t *testing.T) {
+	node, err := NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+
+	resp, err := node.HandleAppendEntries(AppendEntriesRequest{
+		Term:     1,
+		LeaderID: "n2",
+		Entries:  []LogEntry{{Term: 1, Command: []byte("set a 1")}},
+	})
+	if err != nil {
+		t.Fatalf("append entries: %v", err)
+	}
+	if !resp.Success {
+		t.Fatal("success = false, want true")
+	}
+
+	log := node.Log()
+	if len(log) != 1 {
+		t.Fatalf("log length = %d, want 1", len(log))
+	}
+	if got := log[0].Index; got != 1 {
+		t.Fatalf("entry index = %d, want 1", got)
+	}
+}
+
 func TestAppendEntriesTruncatesConflictsAndAppends(t *testing.T) {
 	node, err := NewRaftNode("n1", nil, nil)
 	if err != nil {

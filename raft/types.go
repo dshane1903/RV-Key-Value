@@ -39,6 +39,22 @@ type RequestVoteResponse struct {
 	VoteGranted bool
 }
 
+// AppendEntriesRequest is sent by leaders for heartbeats and log replication.
+type AppendEntriesRequest struct {
+	Term         uint64
+	LeaderID     string
+	PrevLogIndex uint64
+	PrevLogTerm  uint64
+	Entries      []LogEntry
+	LeaderCommit uint64
+}
+
+// AppendEntriesResponse reports whether the follower accepted the append.
+type AppendEntriesResponse struct {
+	Term    uint64
+	Success bool
+}
+
 // ErrLogInconsistent is returned when an append does not match the local log.
 type ErrLogInconsistent struct {
 	PrevLogIndex uint64

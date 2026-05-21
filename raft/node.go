@@ -154,6 +154,64 @@ func (n *RaftNode) RequestVote(req RequestVoteRequest) (RequestVoteResponse, err
 	return resp, n.persistLocked()
 }
 
+func (n *RaftNode) HandleAppendEntries(req AppendEntriesRequest) (AppendEntriesResponse, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	resp := AppendEntriesResponse{Term: n.currentTerm}
+	if req.Term < n.currentTerm {
+		return resp, nil
+	}
+
+	changed := false
+	if req.Term > n.currentTerm {
+		n.currentTerm = req.Term
+		n.votedFor = ""
+		changed = true
+	}
+	n.state = Follower
+
+	if req.PrevLogIndex > 0 {
+		if req.PrevLogIndex > uint64(len(n.log)) || n.log[req.PrevLogIndex-1].Term != req.PrevLogTerm {
+			resp.Term = n.currentTerm
+			if changed {
+				return resp, n.persistLocked()
+			}
+			return resp, nil
+		}
+	}
+
+	next := req.PrevLogIndex + 1
+	for i, entry := range req.Entries {
+		entry.Index = next + uint64(i)
+		if entry.Index <= uint64(len(n.log)) {
+			local := n.log[entry.Index-1]
+			if local.Term != entry.Term {
+				n.log = n.log[:entry.Index-1]
+				n.log = append(n.log, normalizeEntries(entry.Index, req.Entries[i:])...)
+				changed = true
+				break
+			}
+			continue
+		}
+
+		n.log = append(n.log, normalizeEntries(entry.Index, req.Entries[i:])...)
+		changed = true
+		break
+	}
+
+	if req.LeaderCommit > n.commitIndex {
+		n.commitIndex = min(req.LeaderCommit, lastLogIndex(n.log))
+	}
+
+	resp.Term = n.currentTerm
+	resp.Success = true
+	if !changed {
+		return resp, nil
+	}
+	return resp, n.persistLocked()
+}
+
 func (n *RaftNode) AppendLocal(command []byte) (LogEntry, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()

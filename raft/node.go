@@ -122,6 +122,38 @@ func (n *RaftNode) SetVotedFor(candidateID string) error {
 	return n.persistLocked()
 }
 
+func (n *RaftNode) RequestVote(req RequestVoteRequest) (RequestVoteResponse, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	resp := RequestVoteResponse{Term: n.currentTerm}
+	if req.Term < n.currentTerm {
+		return resp, nil
+	}
+
+	changed := false
+	if req.Term > n.currentTerm {
+		n.currentTerm = req.Term
+		n.votedFor = ""
+		n.state = Follower
+		changed = true
+	}
+
+	resp.Term = n.currentTerm
+	canVoteForCandidate := n.votedFor == "" || n.votedFor == req.CandidateID
+	logIsFreshEnough := IsLogAtLeastUpToDate(req.LastLogIndex, req.LastLogTerm, lastLogIndex(n.log), lastLogTerm(n.log))
+	if canVoteForCandidate && logIsFreshEnough {
+		n.votedFor = req.CandidateID
+		resp.VoteGranted = true
+		changed = true
+	}
+
+	if !changed {
+		return resp, nil
+	}
+	return resp, n.persistLocked()
+}
+
 func (n *RaftNode) AppendLocal(command []byte) (LogEntry, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()

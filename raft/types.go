@@ -25,6 +25,20 @@ type PersistentState struct {
 	Log         []LogEntry `json:"log"`
 }
 
+// RequestVoteRequest is the Raft vote request used during leader election.
+type RequestVoteRequest struct {
+	Term         uint64
+	CandidateID  string
+	LastLogIndex uint64
+	LastLogTerm  uint64
+}
+
+// RequestVoteResponse reports whether the candidate received this node's vote.
+type RequestVoteResponse struct {
+	Term        uint64
+	VoteGranted bool
+}
+
 // ErrLogInconsistent is returned when an append does not match the local log.
 type ErrLogInconsistent struct {
 	PrevLogIndex uint64

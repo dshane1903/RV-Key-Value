@@ -90,6 +90,119 @@ func TestAppendEntriesRejectsInconsistentPreviousEntry(t *testing.T) {
 	}
 }
 
+func TestRequestVoteGrantsVoteForFreshLog(t *testing.T) {
+	store := &memoryStore{}
+	node, err := NewRaftNode("n1", nil, store)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+
+	resp, err := node.RequestVote(RequestVoteRequest{
+		Term:        1,
+		CandidateID: "n2",
+	})
+	if err != nil {
+		t.Fatalf("request vote: %v", err)
+	}
+	if !resp.VoteGranted {
+		t.Fatal("vote granted = false, want true")
+	}
+	if resp.Term != 1 {
+		t.Fatalf("response term = %d, want 1", resp.Term)
+	}
+	if got := node.VotedFor(); got != "n2" {
+		t.Fatalf("votedFor = %q, want n2", got)
+	}
+	if got := store.state.VotedFor; got != "n2" {
+		t.Fatalf("persisted votedFor = %q, want n2", got)
+	}
+}
+
+func TestRequestVoteRejectsSecondCandidateInSameTerm(t *testing.T) {
+	node, err := NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+
+	first, err := node.RequestVote(RequestVoteRequest{Term: 1, CandidateID: "n2"})
+	if err != nil {
+		t.Fatalf("first vote: %v", err)
+	}
+	if !first.VoteGranted {
+		t.Fatal("first vote granted = false, want true")
+	}
+
+	second, err := node.RequestVote(RequestVoteRequest{Term: 1, CandidateID: "n3"})
+	if err != nil {
+		t.Fatalf("second vote: %v", err)
+	}
+	if second.VoteGranted {
+		t.Fatal("second vote granted = true, want false")
+	}
+	if got := node.VotedFor(); got != "n2" {
+		t.Fatalf("votedFor = %q, want n2", got)
+	}
+}
+
+func TestRequestVoteRejectsStaleCandidateLog(t *testing.T) {
+	node, err := NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeFollower(3); err != nil {
+		t.Fatalf("become follower: %v", err)
+	}
+	if _, err := node.AppendLocal([]byte("set a 1")); err != nil {
+		t.Fatalf("append local: %v", err)
+	}
+
+	resp, err := node.RequestVote(RequestVoteRequest{
+		Term:         4,
+		CandidateID:  "n2",
+		LastLogIndex: 10,
+		LastLogTerm:  2,
+	})
+	if err != nil {
+		t.Fatalf("request vote: %v", err)
+	}
+	if resp.VoteGranted {
+		t.Fatal("vote granted = true, want false")
+	}
+	if got := node.CurrentTerm(); got != 4 {
+		t.Fatalf("term = %d, want 4", got)
+	}
+	if got := node.VotedFor(); got != "" {
+		t.Fatalf("votedFor = %q, want empty", got)
+	}
+}
+
+func TestRequestVoteHigherTermStepsDownLeader(t *testing.T) {
+	node, err := NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeCandidate(); err != nil {
+		t.Fatalf("become candidate: %v", err)
+	}
+	if err := node.BecomeLeader(); err != nil {
+		t.Fatalf("become leader: %v", err)
+	}
+
+	resp, err := node.RequestVote(RequestVoteRequest{
+		Term:        2,
+		CandidateID: "n2",
+	})
+	if err != nil {
+		t.Fatalf("request vote: %v", err)
+	}
+	if !resp.VoteGranted {
+		t.Fatal("vote granted = false, want true")
+	}
+	if got := node.State(); got != Follower {
+		t.Fatalf("state = %s, want %s", got, Follower)
+	}
+}
+
 func TestAppendEntriesTruncatesConflictsAndAppends(t *testing.T) {
 	node, err := NewRaftNode("n1", nil, nil)
 	if err != nil {

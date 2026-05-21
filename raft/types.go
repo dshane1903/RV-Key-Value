@@ -74,6 +74,15 @@ func (e ErrUnknownPeer) Error() string {
 	return fmt.Sprintf("unknown peer %q", e.PeerID)
 }
 
+// ErrNotLeader is returned when a write is proposed to a non-leader node.
+type ErrNotLeader struct {
+	State State
+}
+
+func (e ErrNotLeader) Error() string {
+	return fmt.Sprintf("node is %s, not leader", e.State)
+}
+
 // StableStore persists and restores Raft's durable state.
 type StableStore interface {
 	Save(PersistentState) error

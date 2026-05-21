@@ -80,6 +80,11 @@ type StableStore interface {
 	Load() (PersistentState, error)
 }
 
+// StateMachine applies committed Raft log entries in order.
+type StateMachine interface {
+	Apply(LogEntry) error
+}
+
 // IsLogAtLeastUpToDate implements Raft's RequestVote log freshness comparison.
 func IsLogAtLeastUpToDate(candidateLastIndex, candidateLastTerm, localLastIndex, localLastTerm uint64) bool {
 	if candidateLastTerm != localLastTerm {

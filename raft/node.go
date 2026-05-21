@@ -93,6 +93,12 @@ func (n *RaftNode) CommitIndex() uint64 {
 	return n.commitIndex
 }
 
+func (n *RaftNode) LastApplied() uint64 {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.lastApplied
+}
+
 func (n *RaftNode) NextIndex(peerID string) uint64 {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
@@ -310,6 +316,20 @@ func (n *RaftNode) RecordReplicationFailure(peerID string) error {
 	return nil
 }
 
+func (n *RaftNode) ApplyCommitted(sm StateMachine) error {
+	for {
+		entry, ok := n.nextCommittedEntry()
+		if !ok {
+			return nil
+		}
+
+		if err := sm.Apply(entry); err != nil {
+			return err
+		}
+		n.markApplied(entry.Index)
+	}
+}
+
 // AppendEntries applies the Raft log consistency rule and appends entries after prevLogIndex.
 func (n *RaftNode) AppendEntries(prevLogIndex, prevLogTerm uint64, entries []LogEntry) error {
 	n.mu.Lock()
@@ -351,6 +371,26 @@ func (n *RaftNode) persistLocked() error {
 		VotedFor:    n.votedFor,
 		Log:         cloneLog(n.log),
 	})
+}
+
+func (n *RaftNode) nextCommittedEntry() (LogEntry, bool) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	next := n.lastApplied + 1
+	if next > n.commitIndex || next > uint64(len(n.log)) {
+		return LogEntry{}, false
+	}
+	return cloneLog([]LogEntry{n.log[next-1]})[0], true
+}
+
+func (n *RaftNode) markApplied(index uint64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if index > n.lastApplied {
+		n.lastApplied = index
+	}
 }
 
 func (n *RaftNode) initLeaderProgressLocked() {

@@ -42,6 +42,13 @@ func (c *testCluster) RequestVote(_ context.Context, peerID string, req RequestV
 	return c.nodes[peerID].RequestVote(req)
 }
 
+func (c *testCluster) AppendEntries(_ context.Context, peerID string, req AppendEntriesRequest) (AppendEntriesResponse, error) {
+	if c.down[peerID] {
+		return AppendEntriesResponse{}, errors.New("peer unavailable")
+	}
+	return c.nodes[peerID].HandleAppendEntries(req)
+}
+
 func (c *testCluster) leaderIDs() []string {
 	var leaders []string
 	for id, node := range c.nodes {
@@ -101,5 +108,74 @@ func TestThreeNodeClusterReElectsAfterLeaderUnavailable(t *testing.T) {
 	}
 	if got := cluster.nodes["n2"].CurrentTerm(); got != 2 {
 		t.Fatalf("new leader term = %d, want 2", got)
+	}
+}
+
+func TestThreeNodeClusterReplicatesLeaderEntryToFollowers(t *testing.T) {
+	cluster := newTestCluster(t, "n1", "n2", "n3")
+
+	won, err := cluster.nodes["n1"].StartElection(context.Background(), cluster)
+	if err != nil {
+		t.Fatalf("start election: %v", err)
+	}
+	if !won {
+		t.Fatal("won = false, want true")
+	}
+
+	entry, err := cluster.nodes["n1"].AppendLocal([]byte("set a 1"))
+	if err != nil {
+		t.Fatalf("append local: %v", err)
+	}
+	if err := cluster.nodes["n1"].sendHeartbeats(context.Background(), cluster); err != nil {
+		t.Fatalf("send heartbeats: %v", err)
+	}
+
+	for _, id := range []string{"n2", "n3"} {
+		log := cluster.nodes[id].Log()
+		if len(log) != 1 {
+			t.Fatalf("%s log length = %d, want 1", id, len(log))
+		}
+		if got := string(log[0].Command); got != "set a 1" {
+			t.Fatalf("%s command = %q, want set a 1", id, got)
+		}
+	}
+	if got := cluster.nodes["n1"].CommitIndex(); got != entry.Index {
+		t.Fatalf("leader commitIndex = %d, want %d", got, entry.Index)
+	}
+}
+
+func TestThreeNodeClusterStaleFollowerCatchesUp(t *testing.T) {
+	cluster := newTestCluster(t, "n1", "n2", "n3")
+
+	if err := cluster.nodes["n1"].BecomeFollower(1); err != nil {
+		t.Fatalf("become follower: %v", err)
+	}
+	if _, err := cluster.nodes["n1"].AppendLocal([]byte("set a 1")); err != nil {
+		t.Fatalf("append local 1: %v", err)
+	}
+	if _, err := cluster.nodes["n1"].AppendLocal([]byte("set b 2")); err != nil {
+		t.Fatalf("append local 2: %v", err)
+	}
+	if err := cluster.nodes["n1"].BecomeCandidate(); err != nil {
+		t.Fatalf("become candidate: %v", err)
+	}
+	if err := cluster.nodes["n1"].BecomeLeader(); err != nil {
+		t.Fatalf("become leader: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := cluster.nodes["n1"].sendHeartbeats(context.Background(), cluster); err != nil {
+			t.Fatalf("send heartbeat %d: %v", i, err)
+		}
+	}
+
+	for _, id := range []string{"n2", "n3"} {
+		log := cluster.nodes[id].Log()
+		if len(log) != 2 {
+			t.Fatalf("%s log length = %d, want 2", id, len(log))
+		}
+		if got := string(log[1].Command); got != "set b 2" {
+			t.Fatalf("%s second command = %q, want set b 2", id, got)
+		}
 	}
 }

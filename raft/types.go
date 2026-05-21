@@ -65,6 +65,15 @@ func (e ErrLogInconsistent) Error() string {
 	return fmt.Sprintf("log is inconsistent at index %d term %d", e.PrevLogIndex, e.PrevLogTerm)
 }
 
+// ErrUnknownPeer is returned when leader replication state is missing a peer.
+type ErrUnknownPeer struct {
+	PeerID string
+}
+
+func (e ErrUnknownPeer) Error() string {
+	return fmt.Sprintf("unknown peer %q", e.PeerID)
+}
+
 // StableStore persists and restores Raft's durable state.
 type StableStore interface {
 	Save(PersistentState) error

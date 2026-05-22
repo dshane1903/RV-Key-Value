@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -45,6 +46,8 @@ func NewHTTPHandlerWithForwarding(node *raft.RaftNode, appendClient raft.AppendC
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/kv/", api.handleKV)
+	mux.HandleFunc("/cluster/members", api.handleClusterMembers)
+	mux.HandleFunc("/cluster/members/", api.handleClusterMember)
 	return mux
 }
 
@@ -78,6 +81,57 @@ func (a *API) handleKV(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, PUT, DELETE")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (a *API) handleClusterMembers(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/cluster/members" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		LeaderID string   `json:"leader_id,omitempty"`
+		Members  []string `json:"members"`
+	}{
+		LeaderID: a.node.LeaderID(),
+		Members:  a.node.Members(),
+	})
+}
+
+func (a *API) handleClusterMember(w http.ResponseWriter, r *http.Request) {
+	peerID := strings.TrimPrefix(r.URL.Path, "/cluster/members/")
+	if peerID == "" || strings.Contains(peerID, "/") {
+		http.Error(w, "invalid member id", http.StatusBadRequest)
+		return
+	}
+
+	var change raft.MembershipChange
+	switch r.Method {
+	case http.MethodPut:
+		change = raft.MembershipChange{Type: raft.MembershipAddPeer, PeerID: peerID}
+	case http.MethodDelete:
+		change = raft.MembershipChange{Type: raft.MembershipRemovePeer, PeerID: peerID}
+	default:
+		w.Header().Set("Allow", "PUT, DELETE")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	command, err := raft.EncodeMembershipChange(change)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !a.proposeAndApply(w, r, command, nil) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) handleGet(w http.ResponseWriter, r *http.Request, key string) {

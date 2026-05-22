@@ -42,7 +42,19 @@ curl -X PUT --data-binary "hello raft" http://127.0.0.1:8001/kv/demo
 curl http://127.0.0.1:8002/kv/demo
 ```
 
-4. Stop the current leader.
+4. Show membership, temporarily remove a node, then add it back.
+
+```sh
+curl http://127.0.0.1:8001/cluster/members
+curl -X DELETE http://127.0.0.1:8001/cluster/members/n3
+curl http://127.0.0.1:8001/cluster/members
+curl -X PUT http://127.0.0.1:8001/cluster/members/n3
+curl http://127.0.0.1:8001/cluster/members
+```
+
+Use the current leader's HTTP port for the membership writes. The Docker demo preconfigures each node's peer transport, so this shows dynamic voting membership for known node IDs.
+
+5. Stop the current leader.
 
 ```sh
 docker compose stop n1
@@ -50,26 +62,26 @@ docker compose stop n1
 
 Use the node ID that is actually leader in the logs.
 
-5. Watch a new leader get elected.
+6. Watch a new leader get elected.
 
 ```sh
 docker compose logs --tail=80 n2 n3
 ```
 
-6. Write while the cluster is reduced to two nodes.
+7. Write while the cluster is reduced to two nodes.
 
 ```sh
 curl -X PUT --data-binary "after failover" http://127.0.0.1:8002/kv/failover
 curl http://127.0.0.1:8003/kv/failover
 ```
 
-7. Bring the old leader back.
+8. Bring the old leader back.
 
 ```sh
 docker compose start n1
 ```
 
-8. Open Grafana.
+9. Open Grafana.
 
 Go to <http://127.0.0.1:3000> and open `Raft KV Cluster`. Point out:
 

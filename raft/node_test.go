@@ -10,6 +10,8 @@ func (m *memoryStore) Save(state PersistentState) error {
 	m.state = PersistentState{
 		CurrentTerm:       state.CurrentTerm,
 		VotedFor:          state.VotedFor,
+		Peers:             clonePeers(state.Peers),
+		SelfMember:        cloneBoolPtr(state.SelfMember),
 		LastIncludedIndex: state.LastIncludedIndex,
 		LastIncludedTerm:  state.LastIncludedTerm,
 		Snapshot:          append([]byte(nil), state.Snapshot...),
@@ -22,11 +24,21 @@ func (m *memoryStore) Load() (PersistentState, error) {
 	return PersistentState{
 		CurrentTerm:       m.state.CurrentTerm,
 		VotedFor:          m.state.VotedFor,
+		Peers:             clonePeers(m.state.Peers),
+		SelfMember:        cloneBoolPtr(m.state.SelfMember),
 		LastIncludedIndex: m.state.LastIncludedIndex,
 		LastIncludedTerm:  m.state.LastIncludedTerm,
 		Snapshot:          append([]byte(nil), m.state.Snapshot...),
 		Log:               cloneLog(m.state.Log),
 	}, nil
+}
+
+func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func TestStateTransitionsPersistTermAndVote(t *testing.T) {

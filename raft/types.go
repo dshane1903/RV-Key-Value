@@ -22,6 +22,8 @@ type LogEntry struct {
 type PersistentState struct {
 	CurrentTerm       uint64     `json:"current_term"`
 	VotedFor          string     `json:"voted_for"`
+	Peers             []string   `json:"peers,omitempty"`
+	SelfMember        *bool      `json:"self_member,omitempty"`
 	LastIncludedIndex uint64     `json:"last_included_index,omitempty"`
 	LastIncludedTerm  uint64     `json:"last_included_term,omitempty"`
 	Snapshot          []byte     `json:"snapshot,omitempty"`
@@ -89,6 +91,13 @@ type ErrUnknownPeer struct {
 
 func (e ErrUnknownPeer) Error() string {
 	return fmt.Sprintf("unknown peer %q", e.PeerID)
+}
+
+// ErrMembershipChangePending is returned when another membership change is not applied yet.
+type ErrMembershipChangePending struct{}
+
+func (e ErrMembershipChangePending) Error() string {
+	return "membership change already pending"
 }
 
 // ErrNotLeader is returned when a write is proposed to a non-leader node.

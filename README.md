@@ -152,13 +152,14 @@ More detail is in [docs/architecture.md](docs/architecture.md). The short versio
 - Client reads go through the leader and commit a no-op read barrier before reading local state.
 - Committed commands signal the apply loop and are applied in log order to the KV state machine.
 - Applied state is periodically snapshotted and compacted so nodes can restart from snapshot plus the retained log suffix.
+- Single-peer membership changes are replicated through Raft and exposed through `/cluster/members`.
 
 ## Current Limits
 
 This is intentionally not a production database yet. The next major improvements would be:
 
 - `InstallSnapshot` RPC support for followers that fall behind a compacted leader log
-- Dynamic membership changes
+- Full joint-consensus membership changes and runtime peer address discovery
 - More efficient linearizable reads, such as ReadIndex or leader leases
 - Stronger process-level chaos harness for Docker networks
 - Auth, TLS, request tracing, and client SDK ergonomics

@@ -1,15 +1,20 @@
 package raft
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 // RaftNode contains the local state needed for Raft consensus.
 type RaftNode struct {
 	mu sync.RWMutex
 
-	id       string
-	peers    []string
-	state    State
-	leaderID string
+	id                   string
+	peers                []string
+	selfMember           bool
+	membershipConfigured bool
+	state                State
+	leaderID             string
 
 	currentTerm uint64
 	votedFor    string
@@ -31,11 +36,13 @@ type RaftNode struct {
 // NewRaftNode builds a node from persisted state when a store is provided.
 func NewRaftNode(id string, peers []string, store StableStore) (*RaftNode, error) {
 	node := &RaftNode{
-		id:          id,
-		peers:       append([]string(nil), peers...),
-		state:       Follower,
-		store:       store,
-		commitReady: make(chan struct{}, 1),
+		id:                   id,
+		peers:                clonePeers(peers),
+		selfMember:           true,
+		membershipConfigured: len(peers) > 0,
+		state:                Follower,
+		store:                store,
+		commitReady:          make(chan struct{}, 1),
 	}
 
 	if store != nil {
@@ -45,6 +52,15 @@ func NewRaftNode(id string, peers []string, store StableStore) (*RaftNode, error
 		}
 		node.currentTerm = state.CurrentTerm
 		node.votedFor = state.VotedFor
+		if state.Peers != nil {
+			node.peers = clonePeers(state.Peers)
+		}
+		if state.SelfMember != nil {
+			node.selfMember = *state.SelfMember
+		}
+		if state.Peers != nil || state.SelfMember != nil {
+			node.membershipConfigured = true
+		}
 		node.lastIncludedIndex = state.LastIncludedIndex
 		node.lastIncludedTerm = state.LastIncludedTerm
 		node.snapshot = append([]byte(nil), state.Snapshot...)
@@ -90,6 +106,24 @@ func (n *RaftNode) Log() []LogEntry {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return cloneLog(n.log)
+}
+
+func (n *RaftNode) Peers() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return clonePeers(n.peers)
+}
+
+func (n *RaftNode) Members() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	members := make([]string, 0, len(n.peers)+1)
+	if n.selfMember {
+		members = append(members, n.id)
+	}
+	members = append(members, n.peers...)
+	return members
 }
 
 func (n *RaftNode) Snapshot() []byte {
@@ -204,6 +238,12 @@ func (n *RaftNode) RequestVote(req RequestVoteRequest) (RequestVoteResponse, err
 	if req.Term < n.currentTerm {
 		return resp, nil
 	}
+	if !n.selfMember {
+		return resp, nil
+	}
+	if !n.isMemberLocked(req.CandidateID) {
+		return resp, nil
+	}
 
 	changed := false
 	if req.Term > n.currentTerm {
@@ -239,6 +279,12 @@ func (n *RaftNode) PreVote(req PreVoteRequest) (PreVoteResponse, error) {
 	if req.Term < n.currentTerm {
 		return resp, nil
 	}
+	if !n.selfMember {
+		return resp, nil
+	}
+	if !n.isMemberLocked(req.CandidateID) {
+		return resp, nil
+	}
 
 	logIsFreshEnough := IsLogAtLeastUpToDate(req.LastLogIndex, req.LastLogTerm, n.lastLogIndexLocked(), n.lastLogTermLocked())
 	resp.VoteGranted = logIsFreshEnough
@@ -251,6 +297,9 @@ func (n *RaftNode) HandleAppendEntries(req AppendEntriesRequest) (AppendEntriesR
 
 	resp := AppendEntriesResponse{Term: n.currentTerm}
 	if req.Term < n.currentTerm {
+		return resp, nil
+	}
+	if !n.isMemberLocked(req.LeaderID) {
 		return resp, nil
 	}
 
@@ -299,6 +348,15 @@ func (n *RaftNode) HandleAppendEntries(req AppendEntriesRequest) (AppendEntriesR
 func (n *RaftNode) AppendLocal(command []byte) (LogEntry, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	if _, ok, err := DecodeMembershipChange(command); ok {
+		if err != nil {
+			return LogEntry{}, err
+		}
+		if n.hasPendingMembershipChangeLocked() {
+			return LogEntry{}, ErrMembershipChangePending{}
+		}
+	}
 
 	entry := LogEntry{
 		Term:    n.currentTerm,
@@ -409,11 +467,34 @@ func (n *RaftNode) ApplyCommitted(sm StateMachine) error {
 			return nil
 		}
 
+		if change, ok, err := DecodeMembershipChange(entry.Command); ok {
+			if err != nil {
+				return err
+			}
+			if err := n.applyCommittedMembershipChange(change, entry.Index); err != nil {
+				return err
+			}
+			continue
+		}
+
 		if err := sm.Apply(entry); err != nil {
 			return err
 		}
 		n.markApplied(entry.Index)
 	}
+}
+
+func (n *RaftNode) ApplyMembershipChange(change MembershipChange) error {
+	if err := change.Validate(); err != nil {
+		return err
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := n.applyMembershipChangeLocked(change); err != nil {
+		return err
+	}
+	return n.persistLocked()
 }
 
 func (n *RaftNode) appendEntriesToLogLocked(prevLogIndex, prevLogTerm uint64, entries []LogEntry) (bool, error) {
@@ -455,6 +536,8 @@ func (n *RaftNode) persistLocked() error {
 	return n.store.Save(PersistentState{
 		CurrentTerm:       n.currentTerm,
 		VotedFor:          n.votedFor,
+		Peers:             clonePeers(n.peers),
+		SelfMember:        boolPtr(n.selfMember),
 		LastIncludedIndex: n.lastIncludedIndex,
 		LastIncludedTerm:  n.lastIncludedTerm,
 		Snapshot:          append([]byte(nil), n.snapshot...),
@@ -494,7 +577,7 @@ func (n *RaftNode) initLeaderProgressLocked() {
 }
 
 func (n *RaftNode) advanceCommitLocked() {
-	if n.state != Leader {
+	if n.state != Leader || !n.selfMember {
 		return
 	}
 
@@ -509,12 +592,94 @@ func (n *RaftNode) advanceCommitLocked() {
 				replicated++
 			}
 		}
-		if replicated >= majority(len(n.peers)+1) {
+		if replicated >= majority(n.clusterSizeLocked()) {
 			n.commitIndex = index
 			n.signalCommitReadyLocked()
 			return
 		}
 	}
+}
+
+func (n *RaftNode) applyMembershipChangeLocked(change MembershipChange) error {
+	n.membershipConfigured = true
+
+	switch change.Type {
+	case MembershipAddPeer:
+		if change.PeerID == n.id {
+			n.selfMember = true
+		} else if !containsPeer(n.peers, change.PeerID) {
+			n.peers = append(n.peers, change.PeerID)
+			if n.state == Leader && n.nextIndex != nil && n.matchIndex != nil {
+				n.nextIndex[change.PeerID] = n.lastLogIndexLocked() + 1
+				n.matchIndex[change.PeerID] = 0
+			}
+		}
+	case MembershipRemovePeer:
+		if change.PeerID == n.id {
+			n.selfMember = false
+			n.state = Follower
+			n.leaderID = ""
+			n.votedFor = ""
+			n.nextIndex = nil
+			n.matchIndex = nil
+		} else {
+			n.peers = removePeer(n.peers, change.PeerID)
+			if n.nextIndex != nil {
+				delete(n.nextIndex, change.PeerID)
+			}
+			if n.matchIndex != nil {
+				delete(n.matchIndex, change.PeerID)
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported membership change %q", change.Type)
+	}
+
+	n.advanceCommitLocked()
+	return nil
+}
+
+func (n *RaftNode) applyCommittedMembershipChange(change MembershipChange, index uint64) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if err := n.applyMembershipChangeLocked(change); err != nil {
+		return err
+	}
+	if index > n.lastApplied {
+		n.lastApplied = index
+	}
+	return n.persistLocked()
+}
+
+func (n *RaftNode) hasPendingMembershipChangeLocked() bool {
+	for _, entry := range n.log {
+		if entry.Index <= n.lastApplied {
+			continue
+		}
+		if _, ok, _ := DecodeMembershipChange(entry.Command); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *RaftNode) isMemberLocked(id string) bool {
+	if id == n.id {
+		return n.selfMember
+	}
+	if containsPeer(n.peers, id) {
+		return true
+	}
+	return n.selfMember && !n.membershipConfigured
+}
+
+func (n *RaftNode) clusterSizeLocked() int {
+	size := len(n.peers)
+	if n.selfMember {
+		size++
+	}
+	return size
 }
 
 func (n *RaftNode) firstLogIndexLocked() uint64 {
@@ -586,4 +751,31 @@ func cloneLog(log []LogEntry) []LogEntry {
 		out[i] = entry
 	}
 	return out
+}
+
+func clonePeers(peers []string) []string {
+	return append([]string(nil), peers...)
+}
+
+func containsPeer(peers []string, id string) bool {
+	for _, peerID := range peers {
+		if peerID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func removePeer(peers []string, id string) []string {
+	out := peers[:0]
+	for _, peerID := range peers {
+		if peerID != id {
+			out = append(out, peerID)
+		}
+	}
+	return out
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }

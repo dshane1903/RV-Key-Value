@@ -182,3 +182,48 @@ func TestOldLeaderCatchesUpAfterPartitionHeals(t *testing.T) {
 		t.Fatalf("old leader commitIndex = %d, want %d", got, entry.Index)
 	}
 }
+
+func TestWritesHaltWithoutMajorityAndRecoverWhenQuorumReturns(t *testing.T) {
+	cluster := newPartitionCluster(t, "n1", "n2", "n3")
+
+	won, err := cluster.nodes["n1"].StartElection(context.Background(), cluster)
+	if err != nil {
+		t.Fatalf("election: %v", err)
+	}
+	if !won {
+		t.Fatal("election won = false, want true")
+	}
+
+	cluster.isolate("n1")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	blockedEntry, err := cluster.nodes["n1"].ProposeWithRetryInterval(ctx, cluster, []byte("set blocked 1"), time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked write err = %v, want deadline exceeded", err)
+	}
+	if got := cluster.nodes["n1"].CommitIndex(); got != 0 {
+		t.Fatalf("commitIndex during majority loss = %d, want 0", got)
+	}
+
+	cluster.heal()
+	recoveredEntry, err := cluster.nodes["n1"].ProposeWithRetryInterval(context.Background(), cluster, []byte("set recovered 1"), time.Millisecond)
+	if err != nil {
+		t.Fatalf("write after quorum returns: %v", err)
+	}
+	if got := cluster.nodes["n1"].CommitIndex(); got != recoveredEntry.Index {
+		t.Fatalf("commitIndex after recovery = %d, want %d", got, recoveredEntry.Index)
+	}
+	if recoveredEntry.Index <= blockedEntry.Index {
+		t.Fatalf("recovered entry index = %d, want after blocked entry %d", recoveredEntry.Index, blockedEntry.Index)
+	}
+
+	for _, id := range []string{"n2", "n3"} {
+		log := cluster.nodes[id].Log()
+		if len(log) != 2 {
+			t.Fatalf("%s log length = %d, want 2", id, len(log))
+		}
+		if got := string(log[1].Command); got != "set recovered 1" {
+			t.Fatalf("%s recovered command = %q, want set recovered 1", id, got)
+		}
+	}
+}

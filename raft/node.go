@@ -21,16 +21,18 @@ type RaftNode struct {
 	nextIndex  map[string]uint64
 	matchIndex map[string]uint64
 
-	store StableStore
+	store       StableStore
+	commitReady chan struct{}
 }
 
 // NewRaftNode builds a node from persisted state when a store is provided.
 func NewRaftNode(id string, peers []string, store StableStore) (*RaftNode, error) {
 	node := &RaftNode{
-		id:    id,
-		peers: append([]string(nil), peers...),
-		state: Follower,
-		store: store,
+		id:          id,
+		peers:       append([]string(nil), peers...),
+		state:       Follower,
+		store:       store,
+		commitReady: make(chan struct{}, 1),
 	}
 
 	if store != nil {
@@ -98,6 +100,10 @@ func (n *RaftNode) CommitIndex() uint64 {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.commitIndex
+}
+
+func (n *RaftNode) CommitReady() <-chan struct{} {
+	return n.commitReady
 }
 
 func (n *RaftNode) LastApplied() uint64 {
@@ -235,7 +241,11 @@ func (n *RaftNode) HandleAppendEntries(req AppendEntriesRequest) (AppendEntriesR
 	changed = changed || logChanged
 
 	if req.LeaderCommit > n.commitIndex {
-		n.commitIndex = min(req.LeaderCommit, lastLogIndex(n.log))
+		nextCommit := min(req.LeaderCommit, lastLogIndex(n.log))
+		if nextCommit > n.commitIndex {
+			n.commitIndex = nextCommit
+			n.signalCommitReadyLocked()
+		}
 	}
 
 	resp.Term = n.currentTerm
@@ -412,8 +422,16 @@ func (n *RaftNode) advanceCommitLocked() {
 		}
 		if replicated >= majority(len(n.peers)+1) {
 			n.commitIndex = index
+			n.signalCommitReadyLocked()
 			return
 		}
+	}
+}
+
+func (n *RaftNode) signalCommitReadyLocked() {
+	select {
+	case n.commitReady <- struct{}{}:
+	default:
 	}
 }
 

@@ -56,12 +56,18 @@ func TestStateTransitionsPersistTermAndVote(t *testing.T) {
 	if got := node.State(); got != Leader {
 		t.Fatalf("state = %s, want %s", got, Leader)
 	}
+	if got := node.LeaderID(); got != "n1" {
+		t.Fatalf("leaderID = %q, want n1", got)
+	}
 
 	if err := node.BecomeFollower(3); err != nil {
 		t.Fatalf("become follower: %v", err)
 	}
 	if got := node.State(); got != Follower {
 		t.Fatalf("state = %s, want %s", got, Follower)
+	}
+	if got := node.LeaderID(); got != "" {
+		t.Fatalf("leaderID = %q, want empty", got)
 	}
 	if got := store.state.CurrentTerm; got != 3 {
 		t.Fatalf("persisted term = %d, want 3", got)
@@ -253,6 +259,9 @@ func TestHandleAppendEntriesHigherTermStepsDownLeader(t *testing.T) {
 	if got := node.State(); got != Follower {
 		t.Fatalf("state = %s, want %s", got, Follower)
 	}
+	if got := node.LeaderID(); got != "n2" {
+		t.Fatalf("leaderID = %q, want n2", got)
+	}
 	if got := store.state.CurrentTerm; got != 2 {
 		t.Fatalf("persisted term = %d, want 2", got)
 	}
@@ -286,6 +295,9 @@ func TestHandleAppendEntriesRejectsInconsistentLog(t *testing.T) {
 	if resp.Success {
 		t.Fatal("success = true, want false")
 	}
+	if got := node.LeaderID(); got != "n2" {
+		t.Fatalf("leaderID = %q, want n2", got)
+	}
 	if len(node.Log()) != 1 {
 		t.Fatalf("log length = %d, want 1", len(node.Log()))
 	}
@@ -307,6 +319,9 @@ func TestHandleAppendEntriesAppendsEntries(t *testing.T) {
 	}
 	if !resp.Success {
 		t.Fatal("success = false, want true")
+	}
+	if got := node.LeaderID(); got != "n2" {
+		t.Fatalf("leaderID = %q, want n2", got)
 	}
 
 	log := node.Log()

@@ -79,6 +79,7 @@ func (n *RaftNode) stepDownForHigherTerm(term uint64) (bool, error) {
 	n.currentTerm = term
 	n.votedFor = ""
 	n.state = Follower
+	n.leaderID = ""
 	n.nextIndex = nil
 	n.matchIndex = nil
 	return true, n.persistLocked()
@@ -99,6 +100,7 @@ func (n *RaftNode) promoteCandidate(term uint64) (bool, error) {
 	}
 
 	n.state = Leader
+	n.leaderID = n.id
 	n.initLeaderProgressLocked()
 	return true, n.persistLocked()
 }

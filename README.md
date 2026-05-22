@@ -7,8 +7,11 @@ This is a learning and portfolio project: the goal is to make the consensus mech
 ## What It Does
 
 - Elects and re-elects leaders across a 3-node Raft cluster
+- Uses pre-vote to avoid disruptive term inflation from isolated nodes
 - Replicates log entries with `AppendEntries`
+- Sends peer vote and replication RPCs concurrently
 - Commits entries after majority replication
+- Signals committed entries for immediate state-machine application
 - Applies committed commands to a bbolt-backed KV state machine
 - Serves `PUT`, `GET`, and `DELETE` through HTTP
 - Forwards follower writes to the current leader when known
@@ -142,8 +145,10 @@ More detail is in [docs/architecture.md](docs/architecture.md). The short versio
 
 - Persistent Raft state is stored in bbolt.
 - Raft-to-Raft traffic uses gRPC/protobuf.
+- Election and replication RPCs fan out to peers concurrently.
+- Pre-vote checks quorum before incrementing a candidate's term.
 - Client writes go through the leader and wait for commit.
-- Committed commands are applied in log order to the KV state machine.
+- Committed commands signal the apply loop and are applied in log order to the KV state machine.
 - Reads currently come from each node's local committed state.
 
 ## Current Limits

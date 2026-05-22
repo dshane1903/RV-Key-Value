@@ -27,7 +27,7 @@ Each `cmd/node` process owns:
 - an HTTP API for client reads and writes
 - a Prometheus `/metrics` endpoint
 
-The node starts an election timer, a heartbeat loop, and an apply loop. The election timer and heartbeat loop drive Raft progress. The apply loop periodically applies committed log entries to the KV state machine.
+The node starts an election timer, a heartbeat loop, and an apply loop. The election timer and heartbeat loop drive Raft progress. The apply loop wakes from a commit-ready signal and applies committed log entries to the KV state machine without waiting on a polling interval.
 
 ## Raft State
 
@@ -46,21 +46,32 @@ The core state lives in `raft.RaftNode`:
 
 ## RPCs
 
-The protobuf service defines the two Raft RPCs:
+The protobuf service defines three Raft RPCs:
 
+- `PreVote`
 - `RequestVote`
 - `AppendEntries`
 
 `raftgrpc` adapts generated protobuf structs into the internal Raft request and response types. This keeps generated transport code out of the consensus package.
+
+## Elections
+
+Before incrementing its term, a node sends `PreVote` requests for the next possible term. If it cannot get a majority of pre-votes, it stays follower and leaves its term unchanged. This prevents an isolated node from repeatedly increasing its term and later forcing a healthy leader to step down when the partition heals.
+
+After pre-vote succeeds, the node becomes candidate, increments its term, votes for itself, and sends `RequestVote` to peers. Vote RPCs are sent concurrently so a slow peer does not block progress to the rest of the cluster.
+
+## Replication
+
+Leaders send `AppendEntries` requests to peers concurrently. The public `ReplicateOnce` path waits for the peer batch to finish, which is useful for heartbeats and tests. Proposal replication can return as soon as the proposed entry reaches majority commit, leaving slower followers to catch up on later heartbeats.
 
 ## Writes
 
 1. A client sends `PUT /kv/{key}` or `DELETE /kv/{key}`.
 2. If the receiving node is a follower and knows the leader, it forwards the write.
 3. The leader appends the command to its local log.
-4. The leader sends `AppendEntries` to followers.
+4. The leader sends concurrent `AppendEntries` calls to followers.
 5. Once a majority has replicated the entry, the leader advances `commitIndex`.
-6. The apply loop applies committed entries to the KV state machine.
+6. The commit-ready signal wakes the apply loop.
 7. The HTTP request returns after the proposal commits and the local state machine applies it.
 
 ## Reads
@@ -71,7 +82,7 @@ The protobuf service defines the two Raft RPCs:
 
 ### Election Safety
 
-Each node persists one `votedFor` value per term and rejects second votes in the same term. A candidate becomes leader only after receiving a majority. Since majorities overlap, at most one leader can be elected for a term.
+Each node persists one `votedFor` value per term and rejects second votes in the same term. A candidate becomes leader only after receiving a majority. Since majorities overlap, at most one leader can be elected for a term. Pre-vote reduces disruptive elections by checking majority reachability before a node increments its term.
 
 ### Leader Append-Only
 

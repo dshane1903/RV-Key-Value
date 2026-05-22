@@ -1,9 +1,11 @@
 package store
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/shaneduncan/rv-key-value/raft"
+	"go.etcd.io/bbolt"
 )
 
 func TestEncodeDecodeCommand(t *testing.T) {
@@ -82,5 +84,88 @@ func TestKVStateMachineAppliesPutAndDelete(t *testing.T) {
 	}
 	if _, ok := stateMachine.Get("name"); ok {
 		t.Fatal("key found after delete")
+	}
+}
+
+func TestBoltKVStateMachinePersistsValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kv.db")
+	db, err := bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	stateMachine, err := NewBoltKVStateMachine(db)
+	if err != nil {
+		t.Fatalf("new state machine: %v", err)
+	}
+
+	put, err := EncodeCommand(Command{
+		Operation: OperationPut,
+		Key:       "name",
+		Value:     []byte("raft"),
+	})
+	if err != nil {
+		t.Fatalf("encode put: %v", err)
+	}
+	if err := stateMachine.Apply(raft.LogEntry{Index: 1, Term: 1, Command: put}); err != nil {
+		t.Fatalf("apply put: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close first db: %v", err)
+	}
+
+	db, err = bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer db.Close()
+
+	reloaded, err := NewBoltKVStateMachine(db)
+	if err != nil {
+		t.Fatalf("reload state machine: %v", err)
+	}
+	value, ok := reloaded.Get("name")
+	if !ok {
+		t.Fatal("key not found after reload")
+	}
+	if got := string(value); got != "raft" {
+		t.Fatalf("value = %q, want raft", got)
+	}
+}
+
+func TestBoltKVStateMachinePersistsDeletes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kv.db")
+	db, err := bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	stateMachine, err := NewBoltKVStateMachine(db)
+	if err != nil {
+		t.Fatalf("new state machine: %v", err)
+	}
+
+	put, err := EncodeCommand(Command{Operation: OperationPut, Key: "name", Value: []byte("raft")})
+	if err != nil {
+		t.Fatalf("encode put: %v", err)
+	}
+	del, err := EncodeCommand(Command{Operation: OperationDelete, Key: "name"})
+	if err != nil {
+		t.Fatalf("encode delete: %v", err)
+	}
+	if err := stateMachine.Apply(raft.LogEntry{Index: 1, Term: 1, Command: put}); err != nil {
+		t.Fatalf("apply put: %v", err)
+	}
+	if err := stateMachine.Apply(raft.LogEntry{Index: 2, Term: 1, Command: del}); err != nil {
+		t.Fatalf("apply delete: %v", err)
+	}
+
+	reloaded, err := NewBoltKVStateMachine(db)
+	if err != nil {
+		t.Fatalf("reload state machine: %v", err)
+	}
+	if _, ok := reloaded.Get("name"); ok {
+		t.Fatal("key found after persisted delete")
 	}
 }

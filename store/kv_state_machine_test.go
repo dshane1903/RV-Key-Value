@@ -103,6 +103,36 @@ func TestKVStateMachineAppliesPutAndDelete(t *testing.T) {
 	}
 }
 
+func TestKVStateMachineSnapshotRestore(t *testing.T) {
+	stateMachine := NewKVStateMachine()
+
+	put, err := EncodeCommand(Command{Operation: OperationPut, Key: "name", Value: []byte("raft")})
+	if err != nil {
+		t.Fatalf("encode put: %v", err)
+	}
+	if err := stateMachine.Apply(raft.LogEntry{Index: 1, Term: 1, Command: put}); err != nil {
+		t.Fatalf("apply put: %v", err)
+	}
+
+	snapshot, err := stateMachine.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	restored := NewKVStateMachine()
+	if err := restored.RestoreSnapshot(snapshot); err != nil {
+		t.Fatalf("restore snapshot: %v", err)
+	}
+
+	value, ok := restored.Get("name")
+	if !ok {
+		t.Fatal("key not found after restore")
+	}
+	if got := string(value); got != "raft" {
+		t.Fatalf("value = %q, want raft", got)
+	}
+}
+
 func TestBoltKVStateMachinePersistsValues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kv.db")
 	db, err := bbolt.Open(path, 0o600, nil)
@@ -143,6 +173,43 @@ func TestBoltKVStateMachinePersistsValues(t *testing.T) {
 	value, ok := reloaded.Get("name")
 	if !ok {
 		t.Fatal("key not found after reload")
+	}
+	if got := string(value); got != "raft" {
+		t.Fatalf("value = %q, want raft", got)
+	}
+}
+
+func TestBoltKVStateMachineRestoresSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kv.db")
+	db, err := bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	stateMachine, err := NewBoltKVStateMachine(db)
+	if err != nil {
+		t.Fatalf("new state machine: %v", err)
+	}
+	if err := stateMachine.RestoreSnapshot([]byte(`{"name":"cmFmdA=="}`)); err != nil {
+		t.Fatalf("restore snapshot: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	db, err = bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer db.Close()
+
+	reloaded, err := NewBoltKVStateMachine(db)
+	if err != nil {
+		t.Fatalf("reload state machine: %v", err)
+	}
+	value, ok := reloaded.Get("name")
+	if !ok {
+		t.Fatal("key not found after snapshot restore")
 	}
 	if got := string(value); got != "raft" {
 		t.Fatalf("value = %q, want raft", got)

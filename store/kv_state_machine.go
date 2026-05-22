@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"sync"
 
 	"github.com/shaneduncan/rv-key-value/raft"
@@ -78,6 +79,44 @@ func (s *KVStateMachine) Get(key string) ([]byte, bool) {
 	return append([]byte(nil), value...), true
 }
 
+func (s *KVStateMachine) Snapshot() ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	data := make(map[string][]byte, len(s.data))
+	for key, value := range s.data {
+		data[key] = append([]byte(nil), value...)
+	}
+	return json.Marshal(data)
+}
+
+func (s *KVStateMachine) RestoreSnapshot(snapshot []byte) error {
+	if len(snapshot) == 0 {
+		return nil
+	}
+
+	var data map[string][]byte
+	if err := json.Unmarshal(snapshot, &data); err != nil {
+		return err
+	}
+
+	restored := make(map[string][]byte, len(data))
+	for key, value := range data {
+		restored[key] = append([]byte(nil), value...)
+	}
+
+	if s.db != nil {
+		if err := s.restoreBolt(restored); err != nil {
+			return err
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = restored
+	return nil
+}
+
 func (s *KVStateMachine) load() error {
 	return s.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(kvBucket)
@@ -89,6 +128,24 @@ func (s *KVStateMachine) load() error {
 			s.data[string(key)] = append([]byte(nil), value...)
 			return nil
 		})
+	})
+}
+
+func (s *KVStateMachine) restoreBolt(data map[string][]byte) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := tx.DeleteBucket(kvBucket); err != nil && err != bbolt.ErrBucketNotFound {
+			return err
+		}
+		bucket, err := tx.CreateBucketIfNotExists(kvBucket)
+		if err != nil {
+			return err
+		}
+		for key, value := range data {
+			if err := bucket.Put([]byte(key), value); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

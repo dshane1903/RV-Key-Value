@@ -15,8 +15,11 @@ type RaftNode struct {
 	votedFor    string
 	log         []LogEntry
 
-	commitIndex uint64
-	lastApplied uint64
+	commitIndex       uint64
+	lastApplied       uint64
+	lastIncludedIndex uint64
+	lastIncludedTerm  uint64
+	snapshot          []byte
 
 	nextIndex  map[string]uint64
 	matchIndex map[string]uint64
@@ -42,6 +45,11 @@ func NewRaftNode(id string, peers []string, store StableStore) (*RaftNode, error
 		}
 		node.currentTerm = state.CurrentTerm
 		node.votedFor = state.VotedFor
+		node.lastIncludedIndex = state.LastIncludedIndex
+		node.lastIncludedTerm = state.LastIncludedTerm
+		node.snapshot = append([]byte(nil), state.Snapshot...)
+		node.commitIndex = state.LastIncludedIndex
+		node.lastApplied = state.LastIncludedIndex
 		node.log = cloneLog(state.Log)
 	}
 
@@ -84,16 +92,34 @@ func (n *RaftNode) Log() []LogEntry {
 	return cloneLog(n.log)
 }
 
+func (n *RaftNode) Snapshot() []byte {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return append([]byte(nil), n.snapshot...)
+}
+
+func (n *RaftNode) LastIncludedIndex() uint64 {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.lastIncludedIndex
+}
+
+func (n *RaftNode) LastIncludedTerm() uint64 {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.lastIncludedTerm
+}
+
 func (n *RaftNode) LastLogIndex() uint64 {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	return lastLogIndex(n.log)
+	return n.lastLogIndexLocked()
 }
 
 func (n *RaftNode) LastLogTerm() uint64 {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	return lastLogTerm(n.log)
+	return n.lastLogTermLocked()
 }
 
 func (n *RaftNode) CommitIndex() uint64 {
@@ -192,7 +218,7 @@ func (n *RaftNode) RequestVote(req RequestVoteRequest) (RequestVoteResponse, err
 
 	resp.Term = n.currentTerm
 	canVoteForCandidate := n.votedFor == "" || n.votedFor == req.CandidateID
-	logIsFreshEnough := IsLogAtLeastUpToDate(req.LastLogIndex, req.LastLogTerm, lastLogIndex(n.log), lastLogTerm(n.log))
+	logIsFreshEnough := IsLogAtLeastUpToDate(req.LastLogIndex, req.LastLogTerm, n.lastLogIndexLocked(), n.lastLogTermLocked())
 	if canVoteForCandidate && logIsFreshEnough {
 		n.votedFor = req.CandidateID
 		resp.VoteGranted = true
@@ -214,7 +240,7 @@ func (n *RaftNode) PreVote(req PreVoteRequest) (PreVoteResponse, error) {
 		return resp, nil
 	}
 
-	logIsFreshEnough := IsLogAtLeastUpToDate(req.LastLogIndex, req.LastLogTerm, lastLogIndex(n.log), lastLogTerm(n.log))
+	logIsFreshEnough := IsLogAtLeastUpToDate(req.LastLogIndex, req.LastLogTerm, n.lastLogIndexLocked(), n.lastLogTermLocked())
 	resp.VoteGranted = logIsFreshEnough
 	return resp, nil
 }
@@ -255,7 +281,7 @@ func (n *RaftNode) HandleAppendEntries(req AppendEntriesRequest) (AppendEntriesR
 	changed = changed || logChanged
 
 	if req.LeaderCommit > n.commitIndex {
-		nextCommit := min(req.LeaderCommit, lastLogIndex(n.log))
+		nextCommit := min(req.LeaderCommit, n.lastLogIndexLocked())
 		if nextCommit > n.commitIndex {
 			n.commitIndex = nextCommit
 			n.signalCommitReadyLocked()
@@ -276,7 +302,7 @@ func (n *RaftNode) AppendLocal(command []byte) (LogEntry, error) {
 
 	entry := LogEntry{
 		Term:    n.currentTerm,
-		Index:   uint64(len(n.log) + 1),
+		Index:   n.lastLogIndexLocked() + 1,
 		Command: append([]byte(nil), command...),
 	}
 	n.log = append(n.log, entry)
@@ -294,14 +320,17 @@ func (n *RaftNode) BuildAppendEntries(peerID string) (AppendEntriesRequest, erro
 	if !ok {
 		return AppendEntriesRequest{}, ErrUnknownPeer{PeerID: peerID}
 	}
+	if next <= n.lastIncludedIndex {
+		next = n.firstLogIndexLocked()
+	}
 
 	prevLogIndex := next - 1
 	return AppendEntriesRequest{
 		Term:         n.currentTerm,
 		LeaderID:     n.id,
 		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  logTermAt(n.log, prevLogIndex),
-		Entries:      cloneEntriesFrom(n.log, next),
+		PrevLogTerm:  n.logTermAtLocked(prevLogIndex),
+		Entries:      n.cloneEntriesFromLocked(next),
 		LeaderCommit: n.commitIndex,
 	}, nil
 }
@@ -329,9 +358,48 @@ func (n *RaftNode) RecordReplicationFailure(peerID string) error {
 		return ErrUnknownPeer{PeerID: peerID}
 	}
 	if next > 1 {
+		if next <= n.lastIncludedIndex+1 {
+			return nil
+		}
 		n.nextIndex[peerID] = next - 1
 	}
 	return nil
+}
+
+func (n *RaftNode) ShouldSnapshot(threshold uint64) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	return threshold > 0 && n.lastApplied >= n.lastIncludedIndex+threshold
+}
+
+func (n *RaftNode) Compact(snapshot []byte) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.lastApplied <= n.lastIncludedIndex {
+		return nil
+	}
+	index := n.lastApplied
+	term := n.logTermAtLocked(index)
+	if term == 0 {
+		return ErrLogInconsistent{PrevLogIndex: index}
+	}
+
+	first := n.firstLogIndexLocked()
+	switch {
+	case index < first:
+		n.log = nil
+	case index >= n.lastLogIndexLocked():
+		n.log = nil
+	default:
+		n.log = cloneLog(n.log[index-first+1:])
+	}
+
+	n.lastIncludedIndex = index
+	n.lastIncludedTerm = term
+	n.snapshot = append([]byte(nil), snapshot...)
+	return n.persistLocked()
 }
 
 func (n *RaftNode) ApplyCommitted(sm StateMachine) error {
@@ -350,7 +418,7 @@ func (n *RaftNode) ApplyCommitted(sm StateMachine) error {
 
 func (n *RaftNode) appendEntriesToLogLocked(prevLogIndex, prevLogTerm uint64, entries []LogEntry) (bool, error) {
 	if prevLogIndex > 0 {
-		if prevLogIndex > uint64(len(n.log)) || n.log[prevLogIndex-1].Term != prevLogTerm {
+		if n.logTermAtLocked(prevLogIndex) != prevLogTerm {
 			return false, ErrLogInconsistent{PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm}
 		}
 	}
@@ -358,10 +426,14 @@ func (n *RaftNode) appendEntriesToLogLocked(prevLogIndex, prevLogTerm uint64, en
 	next := prevLogIndex + 1
 	for i, entry := range entries {
 		entry.Index = next + uint64(i)
-		if entry.Index <= uint64(len(n.log)) {
-			local := n.log[entry.Index-1]
+		if entry.Index <= n.lastIncludedIndex {
+			continue
+		}
+
+		if n.containsLogIndexLocked(entry.Index) {
+			local := n.log[entry.Index-n.firstLogIndexLocked()]
 			if local.Term != entry.Term {
-				n.log = n.log[:entry.Index-1]
+				n.log = n.log[:entry.Index-n.firstLogIndexLocked()]
 				n.log = append(n.log, normalizeEntries(entry.Index, entries[i:])...)
 				return true, nil
 			}
@@ -381,9 +453,12 @@ func (n *RaftNode) persistLocked() error {
 	}
 
 	return n.store.Save(PersistentState{
-		CurrentTerm: n.currentTerm,
-		VotedFor:    n.votedFor,
-		Log:         cloneLog(n.log),
+		CurrentTerm:       n.currentTerm,
+		VotedFor:          n.votedFor,
+		LastIncludedIndex: n.lastIncludedIndex,
+		LastIncludedTerm:  n.lastIncludedTerm,
+		Snapshot:          append([]byte(nil), n.snapshot...),
+		Log:               cloneLog(n.log),
 	})
 }
 
@@ -392,10 +467,10 @@ func (n *RaftNode) nextCommittedEntry() (LogEntry, bool) {
 	defer n.mu.RUnlock()
 
 	next := n.lastApplied + 1
-	if next > n.commitIndex || next > uint64(len(n.log)) {
+	if next > n.commitIndex || !n.containsLogIndexLocked(next) {
 		return LogEntry{}, false
 	}
-	return cloneLog([]LogEntry{n.log[next-1]})[0], true
+	return cloneLog([]LogEntry{n.log[next-n.firstLogIndexLocked()]})[0], true
 }
 
 func (n *RaftNode) markApplied(index uint64) {
@@ -408,7 +483,7 @@ func (n *RaftNode) markApplied(index uint64) {
 }
 
 func (n *RaftNode) initLeaderProgressLocked() {
-	next := lastLogIndex(n.log) + 1
+	next := n.lastLogIndexLocked() + 1
 	n.nextIndex = make(map[string]uint64, len(n.peers))
 	n.matchIndex = make(map[string]uint64, len(n.peers))
 	for _, peerID := range n.peers {
@@ -423,8 +498,8 @@ func (n *RaftNode) advanceCommitLocked() {
 		return
 	}
 
-	for index := lastLogIndex(n.log); index > n.commitIndex; index-- {
-		if logTermAt(n.log, index) != n.currentTerm {
+	for index := n.lastLogIndexLocked(); index > n.commitIndex; index-- {
+		if n.logTermAtLocked(index) != n.currentTerm {
 			continue
 		}
 
@@ -440,6 +515,51 @@ func (n *RaftNode) advanceCommitLocked() {
 			return
 		}
 	}
+}
+
+func (n *RaftNode) firstLogIndexLocked() uint64 {
+	return n.lastIncludedIndex + 1
+}
+
+func (n *RaftNode) lastLogIndexLocked() uint64 {
+	if len(n.log) == 0 {
+		return n.lastIncludedIndex
+	}
+	return n.log[len(n.log)-1].Index
+}
+
+func (n *RaftNode) lastLogTermLocked() uint64 {
+	if len(n.log) == 0 {
+		return n.lastIncludedTerm
+	}
+	return n.log[len(n.log)-1].Term
+}
+
+func (n *RaftNode) containsLogIndexLocked(index uint64) bool {
+	return index >= n.firstLogIndexLocked() && index <= n.lastLogIndexLocked()
+}
+
+func (n *RaftNode) logTermAtLocked(index uint64) uint64 {
+	if index == 0 {
+		return 0
+	}
+	if index == n.lastIncludedIndex {
+		return n.lastIncludedTerm
+	}
+	if !n.containsLogIndexLocked(index) {
+		return 0
+	}
+	return n.log[index-n.firstLogIndexLocked()].Term
+}
+
+func (n *RaftNode) cloneEntriesFromLocked(startIndex uint64) []LogEntry {
+	if startIndex <= n.lastIncludedIndex {
+		startIndex = n.firstLogIndexLocked()
+	}
+	if startIndex > n.lastLogIndexLocked() {
+		return nil
+	}
+	return cloneLog(n.log[startIndex-n.firstLogIndexLocked():])
 }
 
 func (n *RaftNode) signalCommitReadyLocked() {
@@ -466,35 +586,4 @@ func cloneLog(log []LogEntry) []LogEntry {
 		out[i] = entry
 	}
 	return out
-}
-
-func cloneEntriesFrom(log []LogEntry, startIndex uint64) []LogEntry {
-	if startIndex == 0 {
-		startIndex = 1
-	}
-	if startIndex > uint64(len(log)) {
-		return nil
-	}
-	return cloneLog(log[startIndex-1:])
-}
-
-func lastLogIndex(log []LogEntry) uint64 {
-	if len(log) == 0 {
-		return 0
-	}
-	return log[len(log)-1].Index
-}
-
-func logTermAt(log []LogEntry, index uint64) uint64 {
-	if index == 0 || index > uint64(len(log)) {
-		return 0
-	}
-	return log[index-1].Term
-}
-
-func lastLogTerm(log []LogEntry) uint64 {
-	if len(log) == 0 {
-		return 0
-	}
-	return log[len(log)-1].Term
 }

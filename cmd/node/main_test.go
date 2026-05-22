@@ -90,3 +90,11 @@ func (n *notifyingStateMachine) Apply(entry raft.LogEntry) error {
 	n.applied <- entry
 	return nil
 }
+
+func (n *notifyingStateMachine) Snapshot() ([]byte, error) {
+	return nil, nil
+}
+
+func (n *notifyingStateMachine) RestoreSnapshot([]byte) error {
+	return nil
+}

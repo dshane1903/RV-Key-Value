@@ -8,18 +8,24 @@ type memoryStore struct {
 
 func (m *memoryStore) Save(state PersistentState) error {
 	m.state = PersistentState{
-		CurrentTerm: state.CurrentTerm,
-		VotedFor:    state.VotedFor,
-		Log:         cloneLog(state.Log),
+		CurrentTerm:       state.CurrentTerm,
+		VotedFor:          state.VotedFor,
+		LastIncludedIndex: state.LastIncludedIndex,
+		LastIncludedTerm:  state.LastIncludedTerm,
+		Snapshot:          append([]byte(nil), state.Snapshot...),
+		Log:               cloneLog(state.Log),
 	}
 	return nil
 }
 
 func (m *memoryStore) Load() (PersistentState, error) {
 	return PersistentState{
-		CurrentTerm: m.state.CurrentTerm,
-		VotedFor:    m.state.VotedFor,
-		Log:         cloneLog(m.state.Log),
+		CurrentTerm:       m.state.CurrentTerm,
+		VotedFor:          m.state.VotedFor,
+		LastIncludedIndex: m.state.LastIncludedIndex,
+		LastIncludedTerm:  m.state.LastIncludedTerm,
+		Snapshot:          append([]byte(nil), m.state.Snapshot...),
+		Log:               cloneLog(m.state.Log),
 	}, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type partitionCluster struct {
@@ -128,5 +129,56 @@ func TestMinorityPartitionCannotElectLeader(t *testing.T) {
 	}
 	if got := cluster.nodes["n1"].State(); got != Candidate {
 		t.Fatalf("n1 state = %s, want candidate", got)
+	}
+}
+
+func TestOldLeaderCatchesUpAfterPartitionHeals(t *testing.T) {
+	cluster := newPartitionCluster(t, "n1", "n2", "n3")
+
+	won, err := cluster.nodes["n1"].StartElection(context.Background(), cluster)
+	if err != nil {
+		t.Fatalf("first election: %v", err)
+	}
+	if !won {
+		t.Fatal("first election won = false, want true")
+	}
+
+	cluster.isolate("n1")
+	won, err = cluster.nodes["n2"].StartElection(context.Background(), cluster)
+	if err != nil {
+		t.Fatalf("majority election: %v", err)
+	}
+	if !won {
+		t.Fatal("majority election won = false, want true")
+	}
+
+	entry, err := cluster.nodes["n2"].ProposeWithRetryInterval(context.Background(), cluster, []byte("set partition 1"), time.Millisecond)
+	if err != nil {
+		t.Fatalf("propose in majority partition: %v", err)
+	}
+	if got := cluster.nodes["n2"].CommitIndex(); got != entry.Index {
+		t.Fatalf("new leader commitIndex = %d, want %d", got, entry.Index)
+	}
+	if got := len(cluster.nodes["n1"].Log()); got != 0 {
+		t.Fatalf("isolated old leader log length = %d, want 0 before heal", got)
+	}
+
+	cluster.heal()
+	if err := cluster.nodes["n2"].ReplicateOnce(context.Background(), cluster); err != nil {
+		t.Fatalf("replicate after heal: %v", err)
+	}
+
+	if got := cluster.nodes["n1"].State(); got != Follower {
+		t.Fatalf("old leader state = %s, want follower", got)
+	}
+	log := cluster.nodes["n1"].Log()
+	if len(log) != 1 {
+		t.Fatalf("old leader log length = %d, want 1", len(log))
+	}
+	if got := string(log[0].Command); got != "set partition 1" {
+		t.Fatalf("old leader command = %q, want set partition 1", got)
+	}
+	if got := cluster.nodes["n1"].CommitIndex(); got != entry.Index {
+		t.Fatalf("old leader commitIndex = %d, want %d", got, entry.Index)
 	}
 }

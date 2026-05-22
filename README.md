@@ -14,7 +14,8 @@ This is a learning and portfolio project: the goal is to make the consensus mech
 - Signals committed entries for immediate state-machine application
 - Applies committed commands to a bbolt-backed KV state machine
 - Serves `PUT`, `GET`, and `DELETE` through HTTP
-- Forwards follower writes to the current leader when known
+- Forwards follower reads and writes to the current leader when known
+- Uses a committed read barrier before serving reads
 - Exposes Prometheus metrics and a provisioned Grafana dashboard
 - Includes deterministic failure-mode tests and a local process smoke test
 
@@ -148,8 +149,8 @@ More detail is in [docs/architecture.md](docs/architecture.md). The short versio
 - Election and replication RPCs fan out to peers concurrently.
 - Pre-vote checks quorum before incrementing a candidate's term.
 - Client writes go through the leader and wait for commit.
+- Client reads go through the leader and commit a no-op read barrier before reading local state.
 - Committed commands signal the apply loop and are applied in log order to the KV state machine.
-- Reads currently come from each node's local committed state.
 
 ## Current Limits
 
@@ -157,6 +158,6 @@ This is intentionally not a production database yet. The next major improvements
 
 - Snapshotting and log compaction
 - Dynamic membership changes
-- Linearizable read path, such as ReadIndex or leader leases
+- More efficient linearizable reads, such as ReadIndex or leader leases
 - Stronger process-level chaos harness for Docker networks
 - Auth, TLS, request tracing, and client SDK ergonomics

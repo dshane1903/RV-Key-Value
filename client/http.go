@@ -69,7 +69,7 @@ func (a *API) handleKV(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		a.handleGet(w, key)
+		a.handleGet(w, r, key)
 	case http.MethodPut:
 		a.handlePut(w, r, key)
 	case http.MethodDelete:
@@ -80,7 +80,29 @@ func (a *API) handleKV(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *API) handleGet(w http.ResponseWriter, key string) {
+func (a *API) handleGet(w http.ResponseWriter, r *http.Request, key string) {
+	if a.node.State() != raft.Leader {
+		if a.forwardToLeader(w, r, nil) {
+			return
+		}
+		http.Error(w, "not leader", http.StatusConflict)
+		return
+	}
+
+	if err := a.readBarrier(r.Context()); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			http.Error(w, "read timed out", http.StatusGatewayTimeout)
+			return
+		}
+		var notLeader raft.ErrNotLeader
+		if errors.As(err, &notLeader) {
+			http.Error(w, "not leader", http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	value, ok := a.stateMachine.Get(key)
 	if !ok {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -89,6 +111,20 @@ func (a *API) handleGet(w http.ResponseWriter, key string) {
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(value)
+}
+
+func (a *API) readBarrier(parent context.Context) error {
+	ctx, cancel := context.WithTimeout(parent, a.proposalTimeout)
+	defer cancel()
+
+	command, err := store.EncodeCommand(store.Command{Operation: store.OperationNoop})
+	if err != nil {
+		return err
+	}
+	if _, err := a.node.ProposeWithRetryInterval(ctx, a.appendClient, command, a.retryInterval); err != nil {
+		return err
+	}
+	return a.node.ApplyCommitted(a.stateMachine)
 }
 
 func (a *API) handlePut(w http.ResponseWriter, r *http.Request, key string) {

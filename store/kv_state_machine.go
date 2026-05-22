@@ -57,6 +57,8 @@ func (s *KVStateMachine) Apply(entry raft.LogEntry) error {
 	defer s.mu.Unlock()
 
 	switch command.Operation {
+	case OperationNoop:
+		return nil
 	case OperationPut:
 		s.data[command.Key] = append([]byte(nil), command.Value...)
 	case OperationDelete:
@@ -98,6 +100,8 @@ func (s *KVStateMachine) applyBolt(command Command) error {
 		}
 
 		switch command.Operation {
+		case OperationNoop:
+			return nil
 		case OperationPut:
 			return bucket.Put([]byte(command.Key), command.Value)
 		case OperationDelete:

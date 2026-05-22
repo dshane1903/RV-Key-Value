@@ -76,7 +76,9 @@ Leaders send `AppendEntries` requests to peers concurrently. The public `Replica
 
 ## Reads
 
-`GET /kv/{key}` reads from the receiving node's local committed state. This is simple and useful for demos, but it is not a fully linearizable read protocol. A production Raft KV store should add ReadIndex, leader leases, or route reads through the leader with a quorum check.
+`GET /kv/{key}` is routed through the known leader. Before serving the value, the leader proposes and commits an internal no-op command. That read barrier orders the read after all previously committed writes and proves the leader can still reach quorum. If the leader cannot commit the barrier, the read fails instead of returning potentially stale data.
+
+This is intentionally simple and correct for the project shape, but it is not the most efficient linearizable read design. A production Raft KV store would usually use ReadIndex or leader leases to avoid appending a log entry for every read.
 
 ## Raft Guarantees
 
@@ -116,7 +118,7 @@ The Docker Compose demo provisions Prometheus to scrape all nodes and Grafana to
 
 - Static membership keeps the implementation focused on core Raft.
 - No snapshots yet, so logs grow forever.
-- Reads are local committed reads, not linearizable reads.
+- Linearizable reads currently append a no-op barrier, so read-heavy workloads grow the log.
 - The failure tests are mostly deterministic in-memory tests, with a process smoke test for the binary path.
 - gRPC transport is intentionally thin so tests can exercise Raft behavior directly.
 
@@ -124,7 +126,7 @@ The Docker Compose demo provisions Prometheus to scrape all nodes and Grafana to
 
 - Snapshotting and log compaction
 - Dynamic cluster membership
-- Linearizable reads
+- More efficient linearizable reads with ReadIndex or leader leases
 - More Docker-based network partition tests
 - Structured logging and distributed tracing
 - Client library with retry and leader discovery

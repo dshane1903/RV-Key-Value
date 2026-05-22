@@ -10,6 +10,7 @@ type Operation string
 const (
 	OperationPut    Operation = "put"
 	OperationDelete Operation = "delete"
+	OperationNoop   Operation = "noop"
 )
 
 type Command struct {
@@ -37,6 +38,9 @@ func DecodeCommand(data []byte) (Command, error) {
 }
 
 func (c Command) Validate() error {
+	if c.Operation == OperationNoop {
+		return nil
+	}
 	if c.Key == "" {
 		return fmt.Errorf("kv command key is required")
 	}

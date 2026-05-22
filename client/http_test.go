@@ -2,11 +2,13 @@ package client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shaneduncan/rv-key-value/raft"
 	"github.com/shaneduncan/rv-key-value/store"
@@ -16,6 +18,12 @@ type singleNodeAppendClient struct{}
 
 func (singleNodeAppendClient) AppendEntries(context.Context, string, raft.AppendEntriesRequest) (raft.AppendEntriesResponse, error) {
 	return raft.AppendEntriesResponse{}, nil
+}
+
+type unavailableAppendClient struct{}
+
+func (unavailableAppendClient) AppendEntries(context.Context, string, raft.AppendEntriesRequest) (raft.AppendEntriesResponse, error) {
+	return raft.AppendEntriesResponse{}, errors.New("peer unavailable")
 }
 
 func TestHTTPPutGetDeleteOnLeader(t *testing.T) {
@@ -60,6 +68,30 @@ func TestHTTPPutGetDeleteOnLeader(t *testing.T) {
 	handler.ServeHTTP(getResp, get)
 	if getResp.Code != http.StatusNotFound {
 		t.Fatalf("get after delete status = %d, want %d", getResp.Code, http.StatusNotFound)
+	}
+}
+
+func TestHTTPReadOnLeaderFailsWithoutQuorum(t *testing.T) {
+	node, err := raft.NewRaftNode("n1", []string{"n2", "n3"}, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeCandidate(); err != nil {
+		t.Fatalf("become candidate: %v", err)
+	}
+	if err := node.BecomeLeader(); err != nil {
+		t.Fatalf("become leader: %v", err)
+	}
+
+	handler := NewHTTPHandler(node, unavailableAppendClient{}, store.NewKVStateMachine())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/kv/name", nil).WithContext(ctx)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d body=%q", resp.Code, http.StatusGatewayTimeout, resp.Body.String())
 	}
 }
 
@@ -121,6 +153,41 @@ func TestHTTPWriteToFollowerForwardsToKnownLeader(t *testing.T) {
 	}
 	if forwardedBody != "raft" {
 		t.Fatalf("forwarded body = %q, want raft", forwardedBody)
+	}
+}
+
+func TestHTTPReadFromFollowerForwardsToKnownLeader(t *testing.T) {
+	follower, err := raft.NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new follower: %v", err)
+	}
+	if _, err := follower.HandleAppendEntries(raft.AppendEntriesRequest{Term: 1, LeaderID: "n2"}); err != nil {
+		t.Fatalf("append entries: %v", err)
+	}
+
+	var forwardedMethod string
+	leader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwardedMethod = r.Method
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("raft"))
+	}))
+	defer leader.Close()
+
+	forwarder := NewLeaderForwarder("n1", map[string]string{"n2": leader.URL})
+	handler := NewHTTPHandlerWithForwarding(follower, singleNodeAppendClient{}, store.NewKVStateMachine(), forwarder)
+
+	req := httptest.NewRequest(http.MethodGet, "/kv/name", nil)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%q", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if forwardedMethod != http.MethodGet {
+		t.Fatalf("forwarded method = %q, want GET", forwardedMethod)
+	}
+	if got := resp.Body.String(); got != "raft" {
+		t.Fatalf("body = %q, want raft", got)
 	}
 }
 

@@ -40,6 +40,22 @@ func TestDecodeCommandRejectsUnknownOperation(t *testing.T) {
 	}
 }
 
+func TestKVStateMachineIgnoresNoop(t *testing.T) {
+	stateMachine := NewKVStateMachine()
+
+	noop, err := EncodeCommand(Command{Operation: OperationNoop})
+	if err != nil {
+		t.Fatalf("encode noop: %v", err)
+	}
+	if err := stateMachine.Apply(raft.LogEntry{Index: 1, Term: 1, Command: noop}); err != nil {
+		t.Fatalf("apply noop: %v", err)
+	}
+
+	if _, ok := stateMachine.Get("name"); ok {
+		t.Fatal("unexpected key after noop")
+	}
+}
+
 func TestKVStateMachineAppliesPutAndDelete(t *testing.T) {
 	stateMachine := NewKVStateMachine()
 

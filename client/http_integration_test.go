@@ -138,6 +138,22 @@ func TestHTTPFollowerWriteForwardsAndReplicatesAcrossCluster(t *testing.T) {
 		t.Fatalf("put status = %d, want %d", resp.StatusCode, http.StatusNoContent)
 	}
 
+	resp, err = http.Get(servers["n2"].URL + "/kv/name")
+	if err != nil {
+		t.Fatalf("linearizable get through follower: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read follower get body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("follower get status = %d, want %d body=%q", resp.StatusCode, http.StatusOK, string(body))
+	}
+	if got := string(body); got != "raft" {
+		t.Fatalf("follower get body = %q, want raft", got)
+	}
+
 	if err := cluster.nodes["n1"].ReplicateOnce(context.Background(), cluster); err != nil {
 		t.Fatalf("replicate leader commit: %v", err)
 	}

@@ -115,12 +115,13 @@ func run() error {
 		return err
 	}
 	defer closePeers()
+	appendClient := metrics.InstrumentAppendClient(peerClient)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	httpMux := http.NewServeMux()
-	httpMux.Handle("/kv/", metrics.InstrumentKV(httpapi.NewHTTPHandlerWithForwarding(node, peerClient, kvStateMachine, httpapi.NewLeaderForwarder(*id, peerHTTPAddrs))))
+	httpMux.Handle("/kv/", metrics.InstrumentKV(httpapi.NewHTTPHandlerWithForwarding(node, appendClient, kvStateMachine, httpapi.NewLeaderForwarder(*id, peerHTTPAddrs))))
 	httpMux.Handle("/metrics", metrics.Handler())
 	httpServer := &http.Server{
 		Addr:              *httpAddr,
@@ -142,7 +143,7 @@ func run() error {
 		loopErrs <- node.RunElectionTimer(ctx, peerClient, raft.ElectionTimerConfig{Reset: resetElection})
 	}()
 	go func() {
-		loopErrs <- node.RunHeartbeatLoop(ctx, peerClient, raft.DefaultHeartbeatInterval)
+		loopErrs <- node.RunHeartbeatLoop(ctx, appendClient, raft.DefaultHeartbeatInterval)
 	}()
 	go func() {
 		loopErrs <- applyCommittedLoop(ctx, node, kvStateMachine, 25*time.Millisecond)

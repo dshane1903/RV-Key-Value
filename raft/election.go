@@ -32,17 +32,27 @@ func (n *RaftNode) StartElection(ctx context.Context, client VoteClient) (bool, 
 		LastLogTerm:  lastTerm,
 	}
 
+	responses := make(chan voteResult, len(peers))
 	for _, peerID := range peers {
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
+		peerID := peerID
+		go func() {
+			resp, err := client.RequestVote(ctx, peerID, req)
+			responses <- voteResult{resp: resp, err: err}
+		}()
+	}
 
-		resp, err := client.RequestVote(ctx, peerID, req)
-		if err != nil {
+	for remaining := len(peers); remaining > 0; remaining-- {
+		var result voteResult
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case result = <-responses:
+		}
+		if result.err != nil {
 			continue
 		}
 
-		steppedDown, err := n.stepDownForHigherTerm(resp.Term)
+		steppedDown, err := n.stepDownForHigherTerm(result.resp.Term)
 		if err != nil || steppedDown {
 			return false, err
 		}
@@ -50,7 +60,7 @@ func (n *RaftNode) StartElection(ctx context.Context, client VoteClient) (bool, 
 			return false, nil
 		}
 
-		if resp.VoteGranted {
+		if result.resp.VoteGranted {
 			votes++
 			if votes >= majority(len(peers)+1) {
 				return n.promoteCandidate(term)
@@ -59,6 +69,11 @@ func (n *RaftNode) StartElection(ctx context.Context, client VoteClient) (bool, 
 	}
 
 	return false, nil
+}
+
+type voteResult struct {
+	resp RequestVoteResponse
+	err  error
 }
 
 func (n *RaftNode) electionSnapshot() (uint64, uint64, uint64, []string) {

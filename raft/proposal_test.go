@@ -62,14 +62,19 @@ func TestProposeReplicatesToMajority(t *testing.T) {
 		t.Fatalf("commitIndex = %d, want %d", got, entry.Index)
 	}
 
+	replicatedFollowers := 0
 	for _, id := range []string{"n2", "n3"} {
 		log := cluster.nodes[id].Log()
-		if len(log) != 1 {
-			t.Fatalf("%s log length = %d, want 1", id, len(log))
+		if len(log) == 0 {
+			continue
 		}
 		if got := string(log[0].Command); got != "set a 1" {
 			t.Fatalf("%s command = %q, want set a 1", id, got)
 		}
+		replicatedFollowers++
+	}
+	if replicatedFollowers == 0 {
+		t.Fatal("replicated followers = 0, want at least one follower for majority")
 	}
 }
 

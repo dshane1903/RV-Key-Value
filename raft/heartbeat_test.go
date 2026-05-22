@@ -166,6 +166,42 @@ func TestSendHeartbeatsReplicatesNewEntriesAndAdvancesCommit(t *testing.T) {
 	}
 }
 
+func TestReplicateOnceSendsAppendEntriesConcurrently(t *testing.T) {
+	node, err := NewRaftNode("n1", []string{"n2", "n3"}, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeCandidate(); err != nil {
+		t.Fatalf("become candidate: %v", err)
+	}
+	if err := node.BecomeLeader(); err != nil {
+		t.Fatalf("become leader: %v", err)
+	}
+
+	client := newBlockingAppendClient("n2")
+	errs := make(chan error, 1)
+	go func() {
+		errs <- node.ReplicateOnce(context.Background(), client)
+	}()
+
+	select {
+	case <-client.blockedPeerStarted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("blocked peer was not called")
+	}
+
+	select {
+	case <-client.otherPeerCalled:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("second peer was not called while first peer was blocked")
+	}
+
+	close(client.releaseBlockedPeer)
+	if err := <-errs; err != nil {
+		t.Fatalf("replicate once: %v", err)
+	}
+}
+
 func TestSendHeartbeatsBacksOffRejectedFollower(t *testing.T) {
 	node, err := NewRaftNode("n1", []string{"n2"}, nil)
 	if err != nil {
@@ -227,6 +263,36 @@ func TestSendHeartbeatsInitializesMissingLeaderProgress(t *testing.T) {
 	if got := client.count("n2"); got != 1 {
 		t.Fatalf("append count = %d, want 1", got)
 	}
+}
+
+type blockingAppendClient struct {
+	blockedPeer        string
+	blockedPeerStarted chan struct{}
+	otherPeerCalled    chan struct{}
+	releaseBlockedPeer chan struct{}
+
+	onceBlocked sync.Once
+	onceOther   sync.Once
+}
+
+func newBlockingAppendClient(blockedPeer string) *blockingAppendClient {
+	return &blockingAppendClient{
+		blockedPeer:        blockedPeer,
+		blockedPeerStarted: make(chan struct{}),
+		otherPeerCalled:    make(chan struct{}),
+		releaseBlockedPeer: make(chan struct{}),
+	}
+}
+
+func (b *blockingAppendClient) AppendEntries(_ context.Context, peerID string, req AppendEntriesRequest) (AppendEntriesResponse, error) {
+	if peerID == b.blockedPeer {
+		b.onceBlocked.Do(func() { close(b.blockedPeerStarted) })
+		<-b.releaseBlockedPeer
+		return AppendEntriesResponse{Term: req.Term, Success: true}, nil
+	}
+
+	b.onceOther.Do(func() { close(b.otherPeerCalled) })
+	return AppendEntriesResponse{Term: req.Term, Success: true}, nil
 }
 
 func waitForAppendCount(t *testing.T, client *fakeAppendClient, peerID string, want int) {

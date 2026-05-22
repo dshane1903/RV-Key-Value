@@ -89,6 +89,9 @@ func TestThreeNodeClusterReElectsAfterLeaderUnavailable(t *testing.T) {
 	if !won {
 		t.Fatal("first election won = false, want true")
 	}
+	if err := cluster.nodes["n1"].ReplicateOnce(context.Background(), cluster); err != nil {
+		t.Fatalf("initial heartbeat: %v", err)
+	}
 
 	cluster.down["n1"] = true
 	won, err = cluster.nodes["n2"].StartElection(context.Background(), cluster)

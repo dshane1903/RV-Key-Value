@@ -38,8 +38,13 @@ func (n *RaftNode) RunHeartbeatLoop(ctx context.Context, client AppendClient, in
 }
 
 func (n *RaftNode) ReplicateOnce(ctx context.Context, client AppendClient) error {
+	return n.replicateOnce(ctx, client, 0)
+}
+
+func (n *RaftNode) replicateOnce(ctx context.Context, client AppendClient, stopWhenCommitted uint64) error {
 	n.ensureLeaderProgress()
 	peers := n.peerSnapshot()
+	requests := make([]appendRequest, 0, len(peers))
 
 	for _, peerID := range peers {
 		if err := ctx.Err(); err != nil {
@@ -50,29 +55,62 @@ func (n *RaftNode) ReplicateOnce(ctx context.Context, client AppendClient) error
 		if err != nil {
 			return err
 		}
-		resp, err := client.AppendEntries(ctx, peerID, req)
-		if err != nil {
+		requests = append(requests, appendRequest{peerID: peerID, req: req})
+	}
+
+	results := make(chan appendResult, len(requests))
+	for _, request := range requests {
+		request := request
+		go func() {
+			resp, err := client.AppendEntries(ctx, request.peerID, request.req)
+			results <- appendResult{peerID: request.peerID, req: request.req, resp: resp, err: err}
+		}()
+	}
+
+	for remaining := len(requests); remaining > 0; remaining-- {
+		var result appendResult
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case result = <-results:
+		}
+		if result.err != nil {
 			continue
 		}
 
-		steppedDown, err := n.stepDownForHigherTerm(resp.Term)
+		steppedDown, err := n.stepDownForHigherTerm(result.resp.Term)
 		if err != nil || steppedDown {
 			return err
 		}
-		if resp.Success {
-			matchIndex := req.PrevLogIndex + uint64(len(req.Entries))
-			if err := n.RecordReplicationSuccess(peerID, matchIndex); err != nil {
+		if result.resp.Success {
+			matchIndex := result.req.PrevLogIndex + uint64(len(result.req.Entries))
+			if err := n.RecordReplicationSuccess(result.peerID, matchIndex); err != nil {
 				return err
+			}
+			if stopWhenCommitted > 0 && n.isCommitted(stopWhenCommitted) {
+				return nil
 			}
 			continue
 		}
 
-		if err := n.RecordReplicationFailure(peerID); err != nil {
+		if err := n.RecordReplicationFailure(result.peerID); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+type appendRequest struct {
+	peerID string
+	req    AppendEntriesRequest
+}
+
+type appendResult struct {
+	peerID string
+	req    AppendEntriesRequest
+	resp   AppendEntriesResponse
+	err    error
 }
 
 func (n *RaftNode) ensureLeaderProgress() {

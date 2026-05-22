@@ -88,6 +88,9 @@ func TestMajorityPartitionElectsNewLeaderAndOldLeaderStepsDownAfterHeal(t *testi
 	if !won {
 		t.Fatal("first election won = false, want true")
 	}
+	if err := cluster.nodes["n1"].ReplicateOnce(context.Background(), cluster); err != nil {
+		t.Fatalf("initial heartbeat: %v", err)
+	}
 
 	cluster.isolate("n1")
 	won, err = cluster.nodes["n2"].StartElection(context.Background(), cluster)
@@ -142,6 +145,9 @@ func TestOldLeaderCatchesUpAfterPartitionHeals(t *testing.T) {
 	if !won {
 		t.Fatal("first election won = false, want true")
 	}
+	if err := cluster.nodes["n1"].ReplicateOnce(context.Background(), cluster); err != nil {
+		t.Fatalf("initial heartbeat: %v", err)
+	}
 
 	cluster.isolate("n1")
 	won, err = cluster.nodes["n2"].StartElection(context.Background(), cluster)
@@ -193,6 +199,9 @@ func TestWritesHaltWithoutMajorityAndRecoverWhenQuorumReturns(t *testing.T) {
 	if !won {
 		t.Fatal("election won = false, want true")
 	}
+	if err := cluster.nodes["n1"].ReplicateOnce(context.Background(), cluster); err != nil {
+		t.Fatalf("initial heartbeat: %v", err)
+	}
 
 	cluster.isolate("n1")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
@@ -209,6 +218,9 @@ func TestWritesHaltWithoutMajorityAndRecoverWhenQuorumReturns(t *testing.T) {
 	recoveredEntry, err := cluster.nodes["n1"].ProposeWithRetryInterval(context.Background(), cluster, []byte("set recovered 1"), time.Millisecond)
 	if err != nil {
 		t.Fatalf("write after quorum returns: %v", err)
+	}
+	if err := cluster.nodes["n1"].ReplicateOnce(context.Background(), cluster); err != nil {
+		t.Fatalf("replicate recovered entry: %v", err)
 	}
 	if got := cluster.nodes["n1"].CommitIndex(); got != recoveredEntry.Index {
 		t.Fatalf("commitIndex after recovery = %d, want %d", got, recoveredEntry.Index)

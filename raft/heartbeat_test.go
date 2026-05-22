@@ -147,7 +147,7 @@ func TestSendHeartbeatsReplicatesNewEntriesAndAdvancesCommit(t *testing.T) {
 			"n3": {Term: 1, Success: true},
 		},
 	}
-	if err := node.sendHeartbeats(context.Background(), client); err != nil {
+	if err := node.ReplicateOnce(context.Background(), client); err != nil {
 		t.Fatalf("send heartbeats: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestSendHeartbeatsBacksOffRejectedFollower(t *testing.T) {
 			"n2": {Term: 2, Success: false},
 		},
 	}
-	if err := node.sendHeartbeats(context.Background(), client); err != nil {
+	if err := node.ReplicateOnce(context.Background(), client); err != nil {
 		t.Fatalf("send heartbeats: %v", err)
 	}
 	if got := node.NextIndex("n2"); got != 1 {
@@ -221,7 +221,7 @@ func TestSendHeartbeatsInitializesMissingLeaderProgress(t *testing.T) {
 			"n2": {Term: 1, Success: true},
 		},
 	}
-	if err := node.sendHeartbeats(context.Background(), client); err != nil {
+	if err := node.ReplicateOnce(context.Background(), client); err != nil {
 		t.Fatalf("send heartbeats: %v", err)
 	}
 	if got := client.count("n2"); got != 1 {

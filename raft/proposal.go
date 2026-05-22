@@ -37,7 +37,7 @@ func (n *RaftNode) ProposeWithRetryInterval(ctx context.Context, client AppendCl
 			return entry, errors.New("append client is nil")
 		}
 
-		if err := n.sendHeartbeats(ctx, client); err != nil {
+		if err := n.ReplicateOnce(ctx, client); err != nil {
 			return entry, err
 		}
 		if n.isCommitted(entry.Index) {

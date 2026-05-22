@@ -30,14 +30,14 @@ func (n *RaftNode) RunHeartbeatLoop(ctx context.Context, client AppendClient, in
 			if n.State() != Leader {
 				continue
 			}
-			if err := n.sendHeartbeats(ctx, client); err != nil {
+			if err := n.ReplicateOnce(ctx, client); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (n *RaftNode) sendHeartbeats(ctx context.Context, client AppendClient) error {
+func (n *RaftNode) ReplicateOnce(ctx context.Context, client AppendClient) error {
 	n.ensureLeaderProgress()
 	peers := n.peerSnapshot()
 

@@ -151,12 +151,13 @@ More detail is in [docs/architecture.md](docs/architecture.md). The short versio
 - Client writes go through the leader and wait for commit.
 - Client reads go through the leader and commit a no-op read barrier before reading local state.
 - Committed commands signal the apply loop and are applied in log order to the KV state machine.
+- Applied state is periodically snapshotted and compacted so nodes can restart from snapshot plus the retained log suffix.
 
 ## Current Limits
 
 This is intentionally not a production database yet. The next major improvements would be:
 
-- Snapshotting and log compaction
+- `InstallSnapshot` RPC support for followers that fall behind a compacted leader log
 - Dynamic membership changes
 - More efficient linearizable reads, such as ReadIndex or leader leases
 - Stronger process-level chaos harness for Docker networks

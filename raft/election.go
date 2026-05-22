@@ -144,7 +144,7 @@ func (n *RaftNode) electionSnapshot() (uint64, uint64, uint64, []string) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	return n.currentTerm, lastLogIndex(n.log), lastLogTerm(n.log), append([]string(nil), n.peers...)
+	return n.currentTerm, n.lastLogIndexLocked(), n.lastLogTermLocked(), append([]string(nil), n.peers...)
 }
 
 func (n *RaftNode) stepDownForHigherTerm(term uint64) (bool, error) {

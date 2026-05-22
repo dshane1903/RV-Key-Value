@@ -17,11 +17,14 @@ func TestBoltRaftStorePersistsState(t *testing.T) {
 	}
 
 	state := raft.PersistentState{
-		CurrentTerm: 7,
-		VotedFor:    "n2",
+		CurrentTerm:       7,
+		VotedFor:          "n2",
+		LastIncludedIndex: 3,
+		LastIncludedTerm:  6,
+		Snapshot:          []byte(`{"name":"raft"}`),
 		Log: []raft.LogEntry{
-			{Index: 1, Term: 6, Command: []byte("set a 1")},
-			{Index: 2, Term: 7, Command: []byte("set b 2")},
+			{Index: 4, Term: 6, Command: []byte("set a 1")},
+			{Index: 5, Term: 7, Command: []byte("set b 2")},
 		},
 	}
 	if err := first.Save(state); err != nil {
@@ -46,6 +49,15 @@ func TestBoltRaftStorePersistsState(t *testing.T) {
 	}
 	if loaded.VotedFor != state.VotedFor {
 		t.Fatalf("votedFor = %q, want %q", loaded.VotedFor, state.VotedFor)
+	}
+	if loaded.LastIncludedIndex != state.LastIncludedIndex {
+		t.Fatalf("lastIncludedIndex = %d, want %d", loaded.LastIncludedIndex, state.LastIncludedIndex)
+	}
+	if loaded.LastIncludedTerm != state.LastIncludedTerm {
+		t.Fatalf("lastIncludedTerm = %d, want %d", loaded.LastIncludedTerm, state.LastIncludedTerm)
+	}
+	if got := string(loaded.Snapshot); got != string(state.Snapshot) {
+		t.Fatalf("snapshot = %q, want %q", got, string(state.Snapshot))
 	}
 	if got := string(loaded.Log[1].Command); got != "set b 2" {
 		t.Fatalf("entry command = %q, want set b 2", got)

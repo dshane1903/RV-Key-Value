@@ -20,9 +20,12 @@ type LogEntry struct {
 
 // PersistentState is the portion of node state that must survive restarts.
 type PersistentState struct {
-	CurrentTerm uint64     `json:"current_term"`
-	VotedFor    string     `json:"voted_for"`
-	Log         []LogEntry `json:"log"`
+	CurrentTerm       uint64     `json:"current_term"`
+	VotedFor          string     `json:"voted_for"`
+	LastIncludedIndex uint64     `json:"last_included_index,omitempty"`
+	LastIncludedTerm  uint64     `json:"last_included_term,omitempty"`
+	Snapshot          []byte     `json:"snapshot,omitempty"`
+	Log               []LogEntry `json:"log"`
 }
 
 // RequestVoteRequest is the Raft vote request used during leader election.
@@ -106,6 +109,13 @@ type StableStore interface {
 // StateMachine applies committed Raft log entries in order.
 type StateMachine interface {
 	Apply(LogEntry) error
+}
+
+// SnapshotStateMachine can export and restore durable state-machine snapshots.
+type SnapshotStateMachine interface {
+	StateMachine
+	Snapshot() ([]byte, error)
+	RestoreSnapshot([]byte) error
 }
 
 // IsLogAtLeastUpToDate implements Raft's RequestVote log freshness comparison.

@@ -37,12 +37,14 @@ The core state lives in `raft.RaftNode`:
 - `currentTerm`
 - `votedFor`
 - `log`
+- `lastIncludedIndex` and `lastIncludedTerm`
+- latest state-machine snapshot bytes
 - `commitIndex`
 - `lastApplied`
 - `leaderID`
 - leader-only `nextIndex` and `matchIndex`
 
-`currentTerm`, `votedFor`, and `log` are persisted through the `StableStore` interface. This project uses bbolt for the concrete implementation.
+`currentTerm`, `votedFor`, snapshot metadata, snapshot bytes, and the remaining log suffix are persisted through the `StableStore` interface. This project uses bbolt for the concrete implementation.
 
 ## RPCs
 
@@ -79,6 +81,12 @@ Leaders send `AppendEntries` requests to peers concurrently. The public `Replica
 `GET /kv/{key}` is routed through the known leader. Before serving the value, the leader proposes and commits an internal no-op command. That read barrier orders the read after all previously committed writes and proves the leader can still reach quorum. If the leader cannot commit the barrier, the read fails instead of returning potentially stale data.
 
 This is intentionally simple and correct for the project shape, but it is not the most efficient linearizable read design. A production Raft KV store would usually use ReadIndex or leader leases to avoid appending a log entry for every read.
+
+## Snapshotting
+
+The apply loop periodically asks the KV state machine for a snapshot once enough committed entries have been applied. The Raft node persists that snapshot with `lastIncludedIndex` and `lastIncludedTerm`, then compacts the local log prefix that is already represented by the snapshot. On restart, the Raft node restores the compacted-log metadata and the node process restores the KV state machine from the persisted snapshot bytes before applying any remaining log entries.
+
+This keeps restarted nodes from replaying an ever-growing log and prevents normal read-barrier traffic from growing the retained local log forever. The current implementation does not include Raft's `InstallSnapshot` RPC yet, so a follower that falls behind past the leader's compacted prefix may need that future RPC before it can catch up automatically.
 
 ## Raft Guarantees
 
@@ -117,14 +125,14 @@ The Docker Compose demo provisions Prometheus to scrape all nodes and Grafana to
 ## Tradeoffs
 
 - Static membership keeps the implementation focused on core Raft.
-- No snapshots yet, so logs grow forever.
+- Snapshots compact local logs, but there is no `InstallSnapshot` RPC yet for far-behind followers.
 - Linearizable reads currently append a no-op barrier, so read-heavy workloads grow the log.
 - The failure tests are mostly deterministic in-memory tests, with a process smoke test for the binary path.
 - gRPC transport is intentionally thin so tests can exercise Raft behavior directly.
 
 ## Next Improvements
 
-- Snapshotting and log compaction
+- `InstallSnapshot` RPC for far-behind followers
 - Dynamic cluster membership
 - More efficient linearizable reads with ReadIndex or leader leases
 - More Docker-based network partition tests

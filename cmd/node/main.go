@@ -25,6 +25,8 @@ import (
 	"google.golang.org/grpc"
 )
 
+const snapshotThresholdEntries uint64 = 64
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
@@ -92,6 +94,11 @@ func run() error {
 	kvStateMachine, err := store.NewBoltKVStateMachine(kvDB)
 	if err != nil {
 		return fmt.Errorf("create kv state machine: %w", err)
+	}
+	if snapshot := node.Snapshot(); len(snapshot) > 0 {
+		if err := kvStateMachine.RestoreSnapshot(snapshot); err != nil {
+			return fmt.Errorf("restore kv snapshot: %w", err)
+		}
 	}
 	metrics := observability.NewMetrics(*id)
 
@@ -203,10 +210,19 @@ func parsePeers(value string) ([]string, map[string]string, error) {
 	return ids, addrs, nil
 }
 
-func applyCommittedLoop(ctx context.Context, node *raft.RaftNode, stateMachine raft.StateMachine) error {
+func applyCommittedLoop(ctx context.Context, node *raft.RaftNode, stateMachine raft.SnapshotStateMachine) error {
 	for {
 		if err := node.ApplyCommitted(stateMachine); err != nil {
 			return err
+		}
+		if node.ShouldSnapshot(snapshotThresholdEntries) {
+			snapshot, err := stateMachine.Snapshot()
+			if err != nil {
+				return err
+			}
+			if err := node.Compact(snapshot); err != nil {
+				return err
+			}
 		}
 		select {
 		case <-ctx.Done():

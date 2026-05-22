@@ -36,6 +36,7 @@ func run() error {
 		raftAddr = flag.String("raft-addr", ":9001", "raft gRPC listen address")
 		httpAddr = flag.String("http-addr", ":8080", "HTTP client API listen address")
 		peerFlag = flag.String("peers", "", "comma-separated peer list, e.g. n2=localhost:9002,n3=localhost:9003")
+		peerHTTP = flag.String("peer-http", "", "comma-separated peer HTTP list, e.g. n2=http://localhost:8002,n3=http://localhost:8003")
 		dataPath = flag.String("data", "", "bbolt data path")
 		kvPath   = flag.String("kv-data", "", "bbolt KV state machine data path")
 	)
@@ -48,6 +49,10 @@ func run() error {
 	peerIDs, peerAddrs, err := parsePeers(*peerFlag)
 	if err != nil {
 		return err
+	}
+	_, peerHTTPAddrs, err := parsePeers(*peerHTTP)
+	if err != nil {
+		return fmt.Errorf("parse peer HTTP addresses: %w", err)
 	}
 
 	path := *dataPath
@@ -114,7 +119,7 @@ func run() error {
 
 	httpServer := &http.Server{
 		Addr:              *httpAddr,
-		Handler:           httpapi.NewHTTPHandler(node, peerClient, kvStateMachine),
+		Handler:           httpapi.NewHTTPHandlerWithForwarding(node, peerClient, kvStateMachine, httpapi.NewLeaderForwarder(*id, peerHTTPAddrs)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	httpErr := make(chan error, 1)

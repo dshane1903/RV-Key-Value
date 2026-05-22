@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -75,6 +76,71 @@ func TestHTTPWriteToFollowerReturnsConflict(t *testing.T) {
 
 	if resp.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", resp.Code, http.StatusConflict)
+	}
+}
+
+func TestHTTPWriteToFollowerForwardsToKnownLeader(t *testing.T) {
+	follower, err := raft.NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new follower: %v", err)
+	}
+	if _, err := follower.HandleAppendEntries(raft.AppendEntriesRequest{Term: 1, LeaderID: "n2"}); err != nil {
+		t.Fatalf("append entries: %v", err)
+	}
+
+	var forwardedMethod string
+	var forwardedPath string
+	var forwardedBody string
+	leader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		forwardedMethod = r.Method
+		forwardedPath = r.URL.Path
+		forwardedBody = string(body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer leader.Close()
+
+	forwarder := NewLeaderForwarder("n1", map[string]string{"n2": leader.URL})
+	handler := NewHTTPHandlerWithForwarding(follower, singleNodeAppendClient{}, store.NewKVStateMachine(), forwarder)
+
+	req := httptest.NewRequest(http.MethodPut, "/kv/name", strings.NewReader("raft"))
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d body=%q", resp.Code, http.StatusNoContent, resp.Body.String())
+	}
+	if forwardedMethod != http.MethodPut {
+		t.Fatalf("forwarded method = %q, want PUT", forwardedMethod)
+	}
+	if forwardedPath != "/kv/name" {
+		t.Fatalf("forwarded path = %q, want /kv/name", forwardedPath)
+	}
+	if forwardedBody != "raft" {
+		t.Fatalf("forwarded body = %q, want raft", forwardedBody)
+	}
+}
+
+func TestHTTPWriteToFollowerReturnsBadGatewayForUnknownLeader(t *testing.T) {
+	follower, err := raft.NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new follower: %v", err)
+	}
+	if _, err := follower.HandleAppendEntries(raft.AppendEntriesRequest{Term: 1, LeaderID: "n2"}); err != nil {
+		t.Fatalf("append entries: %v", err)
+	}
+
+	forwarder := NewLeaderForwarder("n1", nil)
+	handler := NewHTTPHandlerWithForwarding(follower, singleNodeAppendClient{}, store.NewKVStateMachine(), forwarder)
+	req := httptest.NewRequest(http.MethodDelete, "/kv/name", nil)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusBadGateway)
 	}
 }
 

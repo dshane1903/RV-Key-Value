@@ -1,10 +1,13 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -16,15 +19,21 @@ type API struct {
 	node            *raft.RaftNode
 	appendClient    raft.AppendClient
 	stateMachine    *store.KVStateMachine
+	leaderForwarder *LeaderForwarder
 	proposalTimeout time.Duration
 	retryInterval   time.Duration
 }
 
 func NewHTTPHandler(node *raft.RaftNode, appendClient raft.AppendClient, stateMachine *store.KVStateMachine) http.Handler {
+	return NewHTTPHandlerWithForwarding(node, appendClient, stateMachine, nil)
+}
+
+func NewHTTPHandlerWithForwarding(node *raft.RaftNode, appendClient raft.AppendClient, stateMachine *store.KVStateMachine, leaderForwarder *LeaderForwarder) http.Handler {
 	api := &API{
 		node:            node,
 		appendClient:    appendClient,
 		stateMachine:    stateMachine,
+		leaderForwarder: leaderForwarder,
 		proposalTimeout: 5 * time.Second,
 		retryInterval:   25 * time.Millisecond,
 	}
@@ -32,6 +41,18 @@ func NewHTTPHandler(node *raft.RaftNode, appendClient raft.AppendClient, stateMa
 	mux := http.NewServeMux()
 	mux.HandleFunc("/kv/", api.handleKV)
 	return mux
+}
+
+type LeaderForwarder struct {
+	httpAddrs map[string]string
+	client    *http.Client
+}
+
+func NewLeaderForwarder(selfID string, httpAddrs map[string]string) *LeaderForwarder {
+	return &LeaderForwarder{
+		httpAddrs: httpAddrs,
+		client:    &http.Client{Timeout: 5 * time.Second},
+	}
 }
 
 func (a *API) handleKV(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +103,7 @@ func (a *API) handlePut(w http.ResponseWriter, r *http.Request, key string) {
 		return
 	}
 
-	if !a.proposeAndApply(w, r, command) {
+	if !a.proposeAndApply(w, r, command, value) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -98,13 +119,13 @@ func (a *API) handleDelete(w http.ResponseWriter, r *http.Request, key string) {
 		return
 	}
 
-	if !a.proposeAndApply(w, r, command) {
+	if !a.proposeAndApply(w, r, command, nil) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *API) proposeAndApply(w http.ResponseWriter, r *http.Request, command []byte) bool {
+func (a *API) proposeAndApply(w http.ResponseWriter, r *http.Request, command []byte, forwardBody []byte) bool {
 	ctx, cancel := context.WithTimeout(r.Context(), a.proposalTimeout)
 	defer cancel()
 
@@ -112,6 +133,9 @@ func (a *API) proposeAndApply(w http.ResponseWriter, r *http.Request, command []
 	if err != nil {
 		var notLeader raft.ErrNotLeader
 		if errors.As(err, &notLeader) {
+			if a.forwardToLeader(w, r, forwardBody) {
+				return false
+			}
 			http.Error(w, "not leader", http.StatusConflict)
 			return false
 		}
@@ -128,4 +152,48 @@ func (a *API) proposeAndApply(w http.ResponseWriter, r *http.Request, command []
 		return false
 	}
 	return true
+}
+
+func (a *API) forwardToLeader(w http.ResponseWriter, r *http.Request, body []byte) bool {
+	if a.leaderForwarder == nil {
+		return false
+	}
+
+	leaderID := a.node.LeaderID()
+	if leaderID == "" || leaderID == a.node.ID() {
+		return false
+	}
+
+	status, err := a.leaderForwarder.Forward(r.Context(), leaderID, r.Method, r.URL.Path, body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return true
+	}
+	w.WriteHeader(status)
+	return true
+}
+
+func (f *LeaderForwarder) Forward(ctx context.Context, leaderID, method, path string, body []byte) (int, error) {
+	addr, ok := f.httpAddrs[leaderID]
+	if !ok {
+		return 0, fmt.Errorf("unknown leader %s", leaderID)
+	}
+
+	base, err := url.Parse(addr)
+	if err != nil {
+		return 0, fmt.Errorf("parse leader address: %w", err)
+	}
+	target := base.ResolveReference(&url.URL{Path: path})
+
+	req, err := http.NewRequestWithContext(ctx, method, target.String(), bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
 }

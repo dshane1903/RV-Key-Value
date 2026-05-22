@@ -8,6 +8,12 @@ Run it with:
 go test ./raft
 ```
 
+Run the process-level local smoke test with:
+
+```sh
+scripts/smoke-cluster.sh
+```
+
 ## Covered Scenarios
 
 - Majority partition elects a new leader.
@@ -28,3 +34,14 @@ These tests exercise the same Raft APIs used by the gRPC node process:
 - `HandleAppendEntries`
 
 Process-level chaos with real node binaries is still a future layer, but the current suite keeps the core consensus invariants fast and deterministic.
+
+## Process Smoke Test
+
+`scripts/smoke-cluster.sh` builds the node binary, starts three local node processes, and verifies:
+
+- a leader is elected
+- a write sent to a follower is forwarded and replicated
+- the leader can be stopped
+- the remaining nodes elect a new leader
+- writes continue after failover
+- all child processes and temporary data are cleaned up

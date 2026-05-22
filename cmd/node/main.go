@@ -16,6 +16,7 @@ import (
 	"time"
 
 	httpapi "github.com/shaneduncan/rv-key-value/client"
+	"github.com/shaneduncan/rv-key-value/observability"
 	raftkvpb "github.com/shaneduncan/rv-key-value/proto"
 	"github.com/shaneduncan/rv-key-value/raft"
 	"github.com/shaneduncan/rv-key-value/raftgrpc"
@@ -92,6 +93,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("create kv state machine: %w", err)
 	}
+	metrics := observability.NewMetrics(*id)
 
 	listener, err := net.Listen("tcp", *raftAddr)
 	if err != nil {
@@ -113,13 +115,17 @@ func run() error {
 		return err
 	}
 	defer closePeers()
+	appendClient := metrics.InstrumentAppendClient(peerClient)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	httpMux := http.NewServeMux()
+	httpMux.Handle("/kv/", metrics.InstrumentKV(httpapi.NewHTTPHandlerWithForwarding(node, appendClient, kvStateMachine, httpapi.NewLeaderForwarder(*id, peerHTTPAddrs))))
+	httpMux.Handle("/metrics", metrics.Handler())
 	httpServer := &http.Server{
 		Addr:              *httpAddr,
-		Handler:           httpapi.NewHTTPHandlerWithForwarding(node, peerClient, kvStateMachine, httpapi.NewLeaderForwarder(*id, peerHTTPAddrs)),
+		Handler:           httpMux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	httpErr := make(chan error, 1)
@@ -137,12 +143,12 @@ func run() error {
 		loopErrs <- node.RunElectionTimer(ctx, peerClient, raft.ElectionTimerConfig{Reset: resetElection})
 	}()
 	go func() {
-		loopErrs <- node.RunHeartbeatLoop(ctx, peerClient, raft.DefaultHeartbeatInterval)
+		loopErrs <- node.RunHeartbeatLoop(ctx, appendClient, raft.DefaultHeartbeatInterval)
 	}()
 	go func() {
 		loopErrs <- applyCommittedLoop(ctx, node, kvStateMachine, 25*time.Millisecond)
 	}()
-	go logNodeState(ctx, node, 500*time.Millisecond)
+	go logNodeState(ctx, node, metrics, 500*time.Millisecond)
 
 	log.Printf("node %s listening on raft=%s http=%s with peers %v", *id, *raftAddr, *httpAddr, peerIDs)
 
@@ -213,7 +219,7 @@ func applyCommittedLoop(ctx context.Context, node *raft.RaftNode, stateMachine r
 	}
 }
 
-func logNodeState(ctx context.Context, node *raft.RaftNode, interval time.Duration) {
+func logNodeState(ctx context.Context, node *raft.RaftNode, metrics *observability.Metrics, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -230,8 +236,13 @@ func logNodeState(ctx context.Context, node *raft.RaftNode, interval time.Durati
 			term := node.CurrentTerm()
 			state := node.State()
 			votedFor := node.VotedFor()
+			metrics.SetCurrentTerm(term)
+			metrics.SetCommitIndex(node.CommitIndex())
 			if term != lastTerm || state != lastState || votedFor != lastVote {
 				log.Printf("node %s state=%s term=%d voted_for=%q", node.ID(), state, term, votedFor)
+				if state == raft.Leader && lastState != raft.Leader {
+					metrics.RecordLeaderElection()
+				}
 				lastTerm = term
 				lastState = state
 				lastVote = votedFor

@@ -1,0 +1,77 @@
+services:
+  n1:
+    build: .
+    command:
+      - --id=n1
+      - --raft-addr=:9001
+      - --http-addr=:8080
+      - --peers=n2=n2:9001,n3=n3:9001
+      - --peer-http=n2=http://n2:8080,n3=http://n3:8080
+      - --data=/data/raft.db
+      - --kv-data=/data/kv.db
+    ports:
+      - "8001:8080"
+    volumes:
+      - n1-data:/data
+
+  n2:
+    build: .
+    command:
+      - --id=n2
+      - --raft-addr=:9001
+      - --http-addr=:8080
+      - --peers=n1=n1:9001,n3=n3:9001
+      - --peer-http=n1=http://n1:8080,n3=http://n3:8080
+      - --data=/data/raft.db
+      - --kv-data=/data/kv.db
+    ports:
+      - "8002:8080"
+    volumes:
+      - n2-data:/data
+
+  n3:
+    build: .
+    command:
+      - --id=n3
+      - --raft-addr=:9001
+      - --http-addr=:8080
+      - --peers=n1=n1:9001,n2=n2:9001
+      - --peer-http=n1=http://n1:8080,n2=http://n2:8080
+      - --data=/data/raft.db
+      - --kv-data=/data/kv.db
+    ports:
+      - "8003:8080"
+    volumes:
+      - n3-data:/data
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - n1
+      - n2
+      - n3
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  n1-data:
+  n2-data:
+  n3-data:

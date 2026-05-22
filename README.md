@@ -2,7 +2,33 @@
 
 A distributed key-value store project built from scratch in Go. The current milestone implements Raft leader election, log replication, committed entry application, and a leader-only HTTP KV API.
 
-## Current Demo
+## Docker Demo
+
+Start a 3-node cluster with Prometheus and Grafana:
+
+```sh
+docker compose up --build
+```
+
+The nodes expose HTTP APIs on ports `8001`, `8002`, and `8003`:
+
+```sh
+curl -X PUT --data-binary raft http://127.0.0.1:8001/kv/name
+curl http://127.0.0.1:8002/kv/name
+curl -X DELETE http://127.0.0.1:8003/kv/name
+```
+
+Writes sent to followers are forwarded to the known leader once a heartbeat has identified it. Prometheus is available at <http://127.0.0.1:9090>, and Grafana is available at <http://127.0.0.1:3000> with the `Raft KV Cluster` dashboard provisioned automatically.
+
+Metrics exposed by each node at `/metrics` include:
+
+- `raft_leader_elections_total`
+- `raft_log_replication_latency_seconds`
+- `raft_commit_index`
+- `raft_term_current`
+- `kv_requests_total`
+
+## Local Demo
 
 Start three nodes in separate terminals:
 
@@ -67,6 +93,8 @@ Implemented:
 - KV state machine backed by bbolt
 - Leader-only HTTP `PUT`, `GET`, and `DELETE`
 - Follower write forwarding to the known leader
+- Prometheus metrics endpoint
+- Docker Compose demo with Prometheus and Grafana
 
 Next:
 

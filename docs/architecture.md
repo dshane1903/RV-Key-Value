@@ -39,12 +39,13 @@ The core state lives in `raft.RaftNode`:
 - `log`
 - `lastIncludedIndex` and `lastIncludedTerm`
 - latest state-machine snapshot bytes
+- voting membership: local membership bit plus remote peer IDs
 - `commitIndex`
 - `lastApplied`
 - `leaderID`
 - leader-only `nextIndex` and `matchIndex`
 
-`currentTerm`, `votedFor`, snapshot metadata, snapshot bytes, and the remaining log suffix are persisted through the `StableStore` interface. This project uses bbolt for the concrete implementation.
+`currentTerm`, `votedFor`, voting membership, snapshot metadata, snapshot bytes, and the remaining log suffix are persisted through the `StableStore` interface. This project uses bbolt for the concrete implementation.
 
 ## RPCs
 
@@ -88,6 +89,18 @@ The apply loop periodically asks the KV state machine for a snapshot once enough
 
 This keeps restarted nodes from replaying an ever-growing log and prevents normal read-barrier traffic from growing the retained local log forever. The current implementation does not include Raft's `InstallSnapshot` RPC yet, so a follower that falls behind past the leader's compacted prefix may need that future RPC before it can catch up automatically.
 
+## Membership
+
+Membership changes are encoded as internal Raft log commands and committed through the same proposal path as KV writes. The apply loop intercepts those commands before they reach the KV state machine, then updates and persists the node's voting peer set. Leaders also update `nextIndex` and `matchIndex` when a peer is added or removed.
+
+The HTTP API exposes this as:
+
+- `GET /cluster/members`
+- `PUT /cluster/members/{nodeID}`
+- `DELETE /cluster/members/{nodeID}`
+
+This implementation supports one-at-a-time membership changes among known peer IDs. It prevents overlapping un-applied membership changes and rejects votes or leaders from IDs outside the current membership. It intentionally stops short of full Raft joint consensus and runtime peer address distribution; those are the next production step.
+
 ## Raft Guarantees
 
 ### Election Safety
@@ -124,7 +137,7 @@ The Docker Compose demo provisions Prometheus to scrape all nodes and Grafana to
 
 ## Tradeoffs
 
-- Static membership keeps the implementation focused on core Raft.
+- Membership changes are single-peer changes over already configured peer transports; full joint consensus and address discovery are not implemented yet.
 - Snapshots compact local logs, but there is no `InstallSnapshot` RPC yet for far-behind followers.
 - Linearizable reads currently append a no-op barrier, so read-heavy workloads grow the log.
 - The failure tests are mostly deterministic in-memory tests, with a process smoke test for the binary path.
@@ -133,7 +146,8 @@ The Docker Compose demo provisions Prometheus to scrape all nodes and Grafana to
 ## Next Improvements
 
 - `InstallSnapshot` RPC for far-behind followers
-- Dynamic cluster membership
+- Joint-consensus membership changes
+- Runtime peer address discovery
 - More efficient linearizable reads with ReadIndex or leader leases
 - More Docker-based network partition tests
 - Structured logging and distributed tracing

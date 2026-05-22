@@ -15,6 +15,9 @@ func (n *RaftNode) StartElection(ctx context.Context, client VoteClient) (bool, 
 	if client == nil {
 		return false, errors.New("vote client is nil")
 	}
+	if !n.isSelfMember() {
+		return false, nil
+	}
 
 	preVoteWon, err := n.PreVoteElection(ctx, client)
 	if err != nil || !preVoteWon {
@@ -81,6 +84,9 @@ func (n *RaftNode) PreVoteElection(ctx context.Context, client VoteClient) (bool
 	if client == nil {
 		return false, errors.New("vote client is nil")
 	}
+	if !n.isSelfMember() {
+		return false, nil
+	}
 
 	currentTerm, lastIndex, lastTerm, peers := n.electionSnapshot()
 	votes := 1
@@ -144,7 +150,7 @@ func (n *RaftNode) electionSnapshot() (uint64, uint64, uint64, []string) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	return n.currentTerm, n.lastLogIndexLocked(), n.lastLogTermLocked(), append([]string(nil), n.peers...)
+	return n.currentTerm, n.lastLogIndexLocked(), n.lastLogTermLocked(), clonePeers(n.peers)
 }
 
 func (n *RaftNode) stepDownForHigherTerm(term uint64) (bool, error) {
@@ -174,7 +180,7 @@ func (n *RaftNode) promoteCandidate(term uint64) (bool, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	if n.state != Candidate || n.currentTerm != term {
+	if n.state != Candidate || n.currentTerm != term || !n.selfMember {
 		return false, nil
 	}
 
@@ -186,4 +192,10 @@ func (n *RaftNode) promoteCandidate(term uint64) (bool, error) {
 
 func majority(clusterSize int) int {
 	return clusterSize/2 + 1
+}
+
+func (n *RaftNode) isSelfMember() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.selfMember
 }

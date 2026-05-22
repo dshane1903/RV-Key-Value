@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -24,6 +25,12 @@ type unavailableAppendClient struct{}
 
 func (unavailableAppendClient) AppendEntries(context.Context, string, raft.AppendEntriesRequest) (raft.AppendEntriesResponse, error) {
 	return raft.AppendEntriesResponse{}, errors.New("peer unavailable")
+}
+
+type successfulAppendClient struct{}
+
+func (successfulAppendClient) AppendEntries(_ context.Context, _ string, req raft.AppendEntriesRequest) (raft.AppendEntriesResponse, error) {
+	return raft.AppendEntriesResponse{Term: req.Term, Success: true}, nil
 }
 
 func TestHTTPPutGetDeleteOnLeader(t *testing.T) {
@@ -68,6 +75,65 @@ func TestHTTPPutGetDeleteOnLeader(t *testing.T) {
 	handler.ServeHTTP(getResp, get)
 	if getResp.Code != http.StatusNotFound {
 		t.Fatalf("get after delete status = %d, want %d", getResp.Code, http.StatusNotFound)
+	}
+}
+
+func TestHTTPClusterMembersListsMembers(t *testing.T) {
+	node, err := raft.NewRaftNode("n1", []string{"n2"}, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+
+	handler := NewHTTPHandler(node, singleNodeAppendClient{}, store.NewKVStateMachine())
+	req := httptest.NewRequest(http.MethodGet, "/cluster/members", nil)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	var body struct {
+		Members []string `json:"members"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(body.Members) != 2 || body.Members[0] != "n1" || body.Members[1] != "n2" {
+		t.Fatalf("members = %v, want [n1 n2]", body.Members)
+	}
+}
+
+func TestHTTPClusterMemberAddAndRemove(t *testing.T) {
+	node, err := raft.NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeCandidate(); err != nil {
+		t.Fatalf("become candidate: %v", err)
+	}
+	if err := node.BecomeLeader(); err != nil {
+		t.Fatalf("become leader: %v", err)
+	}
+
+	handler := NewHTTPHandler(node, successfulAppendClient{}, store.NewKVStateMachine())
+	add := httptest.NewRequest(http.MethodPut, "/cluster/members/n2", nil)
+	addResp := httptest.NewRecorder()
+	handler.ServeHTTP(addResp, add)
+	if addResp.Code != http.StatusNoContent {
+		t.Fatalf("add status = %d, want %d body=%q", addResp.Code, http.StatusNoContent, addResp.Body.String())
+	}
+	if peers := node.Peers(); len(peers) != 1 || peers[0] != "n2" {
+		t.Fatalf("peers after add = %v, want [n2]", peers)
+	}
+
+	remove := httptest.NewRequest(http.MethodDelete, "/cluster/members/n2", nil)
+	removeResp := httptest.NewRecorder()
+	handler.ServeHTTP(removeResp, remove)
+	if removeResp.Code != http.StatusNoContent {
+		t.Fatalf("remove status = %d, want %d body=%q", removeResp.Code, http.StatusNoContent, removeResp.Body.String())
+	}
+	if peers := node.Peers(); len(peers) != 0 {
+		t.Fatalf("peers after remove = %v, want []", peers)
 	}
 }
 

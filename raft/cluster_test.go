@@ -126,7 +126,7 @@ func TestThreeNodeClusterReplicatesLeaderEntryToFollowers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append local: %v", err)
 	}
-	if err := cluster.nodes["n1"].sendHeartbeats(context.Background(), cluster); err != nil {
+	if err := cluster.nodes["n1"].ReplicateOnce(context.Background(), cluster); err != nil {
 		t.Fatalf("send heartbeats: %v", err)
 	}
 
@@ -164,7 +164,7 @@ func TestThreeNodeClusterStaleFollowerCatchesUp(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		if err := cluster.nodes["n1"].sendHeartbeats(context.Background(), cluster); err != nil {
+		if err := cluster.nodes["n1"].ReplicateOnce(context.Background(), cluster); err != nil {
 			t.Fatalf("send heartbeat %d: %v", i, err)
 		}
 	}

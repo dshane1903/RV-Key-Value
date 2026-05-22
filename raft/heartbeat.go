@@ -30,14 +30,15 @@ func (n *RaftNode) RunHeartbeatLoop(ctx context.Context, client AppendClient, in
 			if n.State() != Leader {
 				continue
 			}
-			if err := n.sendHeartbeats(ctx, client); err != nil {
+			if err := n.ReplicateOnce(ctx, client); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (n *RaftNode) sendHeartbeats(ctx context.Context, client AppendClient) error {
+func (n *RaftNode) ReplicateOnce(ctx context.Context, client AppendClient) error {
+	n.ensureLeaderProgress()
 	peers := n.peerSnapshot()
 
 	for _, peerID := range peers {
@@ -72,6 +73,29 @@ func (n *RaftNode) sendHeartbeats(ctx context.Context, client AppendClient) erro
 	}
 
 	return nil
+}
+
+func (n *RaftNode) ensureLeaderProgress() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.state != Leader {
+		return
+	}
+	if n.nextIndex == nil || n.matchIndex == nil {
+		n.initLeaderProgressLocked()
+		return
+	}
+	for _, peerID := range n.peers {
+		if _, ok := n.nextIndex[peerID]; !ok {
+			n.initLeaderProgressLocked()
+			return
+		}
+		if _, ok := n.matchIndex[peerID]; !ok {
+			n.initLeaderProgressLocked()
+			return
+		}
+	}
 }
 
 func (n *RaftNode) peerSnapshot() []string {

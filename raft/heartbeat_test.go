@@ -147,7 +147,7 @@ func TestSendHeartbeatsReplicatesNewEntriesAndAdvancesCommit(t *testing.T) {
 			"n3": {Term: 1, Success: true},
 		},
 	}
-	if err := node.sendHeartbeats(context.Background(), client); err != nil {
+	if err := node.ReplicateOnce(context.Background(), client); err != nil {
 		t.Fatalf("send heartbeats: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestSendHeartbeatsBacksOffRejectedFollower(t *testing.T) {
 			"n2": {Term: 2, Success: false},
 		},
 	}
-	if err := node.sendHeartbeats(context.Background(), client); err != nil {
+	if err := node.ReplicateOnce(context.Background(), client); err != nil {
 		t.Fatalf("send heartbeats: %v", err)
 	}
 	if got := node.NextIndex("n2"); got != 1 {
@@ -199,6 +199,33 @@ func TestSendHeartbeatsBacksOffRejectedFollower(t *testing.T) {
 	req := client.last("n2")
 	if req.PrevLogIndex != 1 {
 		t.Fatalf("prevLogIndex = %d, want 1 before backoff", req.PrevLogIndex)
+	}
+}
+
+func TestSendHeartbeatsInitializesMissingLeaderProgress(t *testing.T) {
+	node, err := NewRaftNode("n1", []string{"n2"}, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeCandidate(); err != nil {
+		t.Fatalf("become candidate: %v", err)
+	}
+	if err := node.BecomeLeader(); err != nil {
+		t.Fatalf("become leader: %v", err)
+	}
+	node.nextIndex = nil
+	node.matchIndex = nil
+
+	client := &fakeAppendClient{
+		responses: map[string]AppendEntriesResponse{
+			"n2": {Term: 1, Success: true},
+		},
+	}
+	if err := node.ReplicateOnce(context.Background(), client); err != nil {
+		t.Fatalf("send heartbeats: %v", err)
+	}
+	if got := client.count("n2"); got != 1 {
+		t.Fatalf("append count = %d, want 1", got)
 	}
 }
 

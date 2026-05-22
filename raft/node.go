@@ -6,9 +6,10 @@ import "sync"
 type RaftNode struct {
 	mu sync.RWMutex
 
-	id    string
-	peers []string
-	state State
+	id       string
+	peers    []string
+	state    State
+	leaderID string
 
 	currentTerm uint64
 	votedFor    string
@@ -69,6 +70,12 @@ func (n *RaftNode) VotedFor() string {
 	return n.votedFor
 }
 
+func (n *RaftNode) LeaderID() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.leaderID
+}
+
 func (n *RaftNode) Log() []LogEntry {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
@@ -116,6 +123,7 @@ func (n *RaftNode) BecomeFollower(term uint64) error {
 	defer n.mu.Unlock()
 
 	n.state = Follower
+	n.leaderID = ""
 	n.nextIndex = nil
 	n.matchIndex = nil
 	if term > n.currentTerm {
@@ -130,6 +138,7 @@ func (n *RaftNode) BecomeCandidate() error {
 	defer n.mu.Unlock()
 
 	n.state = Candidate
+	n.leaderID = ""
 	n.nextIndex = nil
 	n.matchIndex = nil
 	n.currentTerm++
@@ -142,6 +151,7 @@ func (n *RaftNode) BecomeLeader() error {
 	defer n.mu.Unlock()
 
 	n.state = Leader
+	n.leaderID = n.id
 	n.initLeaderProgressLocked()
 	return n.persistLocked()
 }
@@ -167,6 +177,7 @@ func (n *RaftNode) RequestVote(req RequestVoteRequest) (RequestVoteResponse, err
 	if req.Term > n.currentTerm {
 		n.currentTerm = req.Term
 		n.votedFor = ""
+		n.leaderID = ""
 		n.nextIndex = nil
 		n.matchIndex = nil
 		n.state = Follower
@@ -201,6 +212,7 @@ func (n *RaftNode) HandleAppendEntries(req AppendEntriesRequest) (AppendEntriesR
 	if req.Term > n.currentTerm {
 		n.currentTerm = req.Term
 		n.votedFor = ""
+		n.leaderID = ""
 		n.nextIndex = nil
 		n.matchIndex = nil
 		changed = true
@@ -210,6 +222,7 @@ func (n *RaftNode) HandleAppendEntries(req AppendEntriesRequest) (AppendEntriesR
 		n.matchIndex = nil
 	}
 	n.state = Follower
+	n.leaderID = req.LeaderID
 
 	if req.PrevLogIndex > 0 {
 		if req.PrevLogIndex > uint64(len(n.log)) || n.log[req.PrevLogIndex-1].Term != req.PrevLogTerm {

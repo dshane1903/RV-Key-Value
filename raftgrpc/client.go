@@ -52,6 +52,19 @@ func (c *PeerClient) RequestVote(ctx context.Context, peerID string, req raft.Re
 	return fromProtoRequestVoteResponse(resp), nil
 }
 
+func (c *PeerClient) PreVote(ctx context.Context, peerID string, req raft.PreVoteRequest) (raft.PreVoteResponse, error) {
+	client, ok := c.clients[peerID]
+	if !ok {
+		return raft.PreVoteResponse{}, fmt.Errorf("unknown peer %s", peerID)
+	}
+
+	resp, err := client.PreVote(ctx, toProtoPreVoteRequest(req))
+	if err != nil {
+		return raft.PreVoteResponse{}, err
+	}
+	return fromProtoPreVoteResponse(resp), nil
+}
+
 func (c *PeerClient) AppendEntries(ctx context.Context, peerID string, req raft.AppendEntriesRequest) (raft.AppendEntriesResponse, error) {
 	client, ok := c.clients[peerID]
 	if !ok {

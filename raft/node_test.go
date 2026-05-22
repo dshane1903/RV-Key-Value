@@ -214,6 +214,62 @@ func TestRequestVoteHigherTermStepsDownLeader(t *testing.T) {
 	}
 }
 
+func TestPreVoteDoesNotMutateTermOrVote(t *testing.T) {
+	node, err := NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeFollower(3); err != nil {
+		t.Fatalf("become follower: %v", err)
+	}
+	if err := node.SetVotedFor("n2"); err != nil {
+		t.Fatalf("set voted for: %v", err)
+	}
+
+	resp, err := node.PreVote(PreVoteRequest{
+		Term:        4,
+		CandidateID: "n3",
+	})
+	if err != nil {
+		t.Fatalf("pre vote: %v", err)
+	}
+	if !resp.VoteGranted {
+		t.Fatal("vote granted = false, want true")
+	}
+	if got := node.CurrentTerm(); got != 3 {
+		t.Fatalf("term = %d, want 3", got)
+	}
+	if got := node.VotedFor(); got != "n2" {
+		t.Fatalf("votedFor = %q, want n2", got)
+	}
+}
+
+func TestPreVoteRejectsStaleCandidateLog(t *testing.T) {
+	node, err := NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeFollower(3); err != nil {
+		t.Fatalf("become follower: %v", err)
+	}
+	if _, err := node.AppendLocal([]byte("set a 1")); err != nil {
+		t.Fatalf("append local: %v", err)
+	}
+
+	resp, err := node.PreVote(PreVoteRequest{
+		Term:         4,
+		CandidateID:  "n2",
+		LastLogIndex: 10,
+		LastLogTerm:  2,
+	})
+	if err != nil {
+		t.Fatalf("pre vote: %v", err)
+	}
+	if resp.VoteGranted {
+		t.Fatal("vote granted = true, want false")
+	}
+}
+
 func TestHandleAppendEntriesRejectsLowerTerm(t *testing.T) {
 	node, err := NewRaftNode("n1", nil, nil)
 	if err != nil {

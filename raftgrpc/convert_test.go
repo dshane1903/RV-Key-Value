@@ -49,3 +49,23 @@ func TestRequestVoteConversion(t *testing.T) {
 		t.Fatalf("roundTrip = %+v, want %+v", roundTrip, req)
 	}
 }
+
+func TestPreVoteConversion(t *testing.T) {
+	req := raft.PreVoteRequest{
+		Term:         3,
+		CandidateID:  "n2",
+		LastLogIndex: 8,
+		LastLogTerm:  3,
+	}
+
+	roundTrip := fromProtoPreVoteRequest(toProtoPreVoteRequest(req))
+	if roundTrip != req {
+		t.Fatalf("roundTrip = %+v, want %+v", roundTrip, req)
+	}
+
+	resp := raft.PreVoteResponse{Term: 3, VoteGranted: true}
+	respRoundTrip := fromProtoPreVoteResponse(toProtoPreVoteResponse(resp))
+	if respRoundTrip != resp {
+		t.Fatalf("resp roundTrip = %+v, want %+v", respRoundTrip, resp)
+	}
+}

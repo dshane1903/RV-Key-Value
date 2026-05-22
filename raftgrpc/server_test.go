@@ -30,6 +30,28 @@ func TestServerRequestVoteDelegatesToNode(t *testing.T) {
 	}
 }
 
+func TestServerPreVoteDelegatesToNodeWithoutMutatingVote(t *testing.T) {
+	node, err := raft.NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	server := NewServer(node)
+
+	resp, err := server.PreVote(context.Background(), &raftkvpb.PreVoteRequest{
+		Term:        1,
+		CandidateId: "n2",
+	})
+	if err != nil {
+		t.Fatalf("pre vote: %v", err)
+	}
+	if !resp.GetVoteGranted() {
+		t.Fatal("vote granted = false, want true")
+	}
+	if got := node.VotedFor(); got != "" {
+		t.Fatalf("node votedFor = %q, want empty", got)
+	}
+}
+
 func TestServerAppendEntriesDelegatesToNode(t *testing.T) {
 	node, err := raft.NewRaftNode("n1", nil, nil)
 	if err != nil {

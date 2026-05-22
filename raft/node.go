@@ -205,6 +205,20 @@ func (n *RaftNode) RequestVote(req RequestVoteRequest) (RequestVoteResponse, err
 	return resp, n.persistLocked()
 }
 
+func (n *RaftNode) PreVote(req PreVoteRequest) (PreVoteResponse, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	resp := PreVoteResponse{Term: n.currentTerm}
+	if req.Term < n.currentTerm {
+		return resp, nil
+	}
+
+	logIsFreshEnough := IsLogAtLeastUpToDate(req.LastLogIndex, req.LastLogTerm, lastLogIndex(n.log), lastLogTerm(n.log))
+	resp.VoteGranted = logIsFreshEnough
+	return resp, nil
+}
+
 func (n *RaftNode) HandleAppendEntries(req AppendEntriesRequest) (AppendEntriesResponse, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()

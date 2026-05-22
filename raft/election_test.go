@@ -26,6 +26,13 @@ func (f *fakeVoteClient) RequestVote(_ context.Context, peerID string, req Reque
 	return f.responses[peerID], nil
 }
 
+func (f *fakeVoteClient) PreVote(_ context.Context, peerID string, req PreVoteRequest) (PreVoteResponse, error) {
+	if err := f.errs[peerID]; err != nil {
+		return PreVoteResponse{}, err
+	}
+	return PreVoteResponse{VoteGranted: true}, nil
+}
+
 func TestStartElectionBecomesLeaderWithMajority(t *testing.T) {
 	node, err := NewRaftNode("n1", []string{"n2", "n3"}, nil)
 	if err != nil {
@@ -171,4 +178,8 @@ func (d delayedVoteClient) RequestVote(ctx context.Context, peerID string, req R
 		}
 	}
 	return d.responses[peerID], nil
+}
+
+func (d delayedVoteClient) PreVote(_ context.Context, peerID string, req PreVoteRequest) (PreVoteResponse, error) {
+	return PreVoteResponse{VoteGranted: true}, nil
 }

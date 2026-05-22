@@ -19,6 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	Raft_PreVote_FullMethodName       = "/raftkv.v1.Raft/PreVote"
 	Raft_RequestVote_FullMethodName   = "/raftkv.v1.Raft/RequestVote"
 	Raft_AppendEntries_FullMethodName = "/raftkv.v1.Raft/AppendEntries"
 )
@@ -27,6 +28,7 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type RaftClient interface {
+	PreVote(ctx context.Context, in *PreVoteRequest, opts ...grpc.CallOption) (*PreVoteResponse, error)
 	RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error)
 	AppendEntries(ctx context.Context, in *AppendEntriesRequest, opts ...grpc.CallOption) (*AppendEntriesResponse, error)
 }
@@ -37,6 +39,16 @@ type raftClient struct {
 
 func NewRaftClient(cc grpc.ClientConnInterface) RaftClient {
 	return &raftClient{cc}
+}
+
+func (c *raftClient) PreVote(ctx context.Context, in *PreVoteRequest, opts ...grpc.CallOption) (*PreVoteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreVoteResponse)
+	err := c.cc.Invoke(ctx, Raft_PreVote_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *raftClient) RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error) {
@@ -63,6 +75,7 @@ func (c *raftClient) AppendEntries(ctx context.Context, in *AppendEntriesRequest
 // All implementations must embed UnimplementedRaftServer
 // for forward compatibility.
 type RaftServer interface {
+	PreVote(context.Context, *PreVoteRequest) (*PreVoteResponse, error)
 	RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error)
 	AppendEntries(context.Context, *AppendEntriesRequest) (*AppendEntriesResponse, error)
 	mustEmbedUnimplementedRaftServer()
@@ -75,6 +88,9 @@ type RaftServer interface {
 // pointer dereference when methods are called.
 type UnimplementedRaftServer struct{}
 
+func (UnimplementedRaftServer) PreVote(context.Context, *PreVoteRequest) (*PreVoteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PreVote not implemented")
+}
 func (UnimplementedRaftServer) RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RequestVote not implemented")
 }
@@ -100,6 +116,24 @@ func RegisterRaftServer(s grpc.ServiceRegistrar, srv RaftServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&Raft_ServiceDesc, srv)
+}
+
+func _Raft_PreVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreVoteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftServer).PreVote(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Raft_PreVote_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftServer).PreVote(ctx, req.(*PreVoteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _Raft_RequestVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -145,6 +179,10 @@ var Raft_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "raftkv.v1.Raft",
 	HandlerType: (*RaftServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "PreVote",
+			Handler:    _Raft_PreVote_Handler,
+		},
 		{
 			MethodName: "RequestVote",
 			Handler:    _Raft_RequestVote_Handler,

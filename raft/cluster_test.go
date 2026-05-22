@@ -42,6 +42,13 @@ func (c *testCluster) RequestVote(_ context.Context, peerID string, req RequestV
 	return c.nodes[peerID].RequestVote(req)
 }
 
+func (c *testCluster) PreVote(_ context.Context, peerID string, req PreVoteRequest) (PreVoteResponse, error) {
+	if c.down[peerID] {
+		return PreVoteResponse{}, errors.New("peer unavailable")
+	}
+	return c.nodes[peerID].PreVote(req)
+}
+
 func (c *testCluster) AppendEntries(_ context.Context, peerID string, req AppendEntriesRequest) (AppendEntriesResponse, error) {
 	if c.down[peerID] {
 		return AppendEntriesResponse{}, errors.New("peer unavailable")

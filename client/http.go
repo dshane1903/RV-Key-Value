@@ -24,6 +24,11 @@ type API struct {
 	retryInterval   time.Duration
 }
 
+const (
+	maxKVValueBytes         = 1 << 20
+	maxForwardResponseBytes = 64 << 10
+)
+
 func NewHTTPHandler(node *raft.RaftNode, appendClient raft.AppendClient, stateMachine *store.KVStateMachine) http.Handler {
 	return NewHTTPHandlerWithForwarding(node, appendClient, stateMachine, nil)
 }
@@ -87,8 +92,13 @@ func (a *API) handleGet(w http.ResponseWriter, key string) {
 }
 
 func (a *API) handlePut(w http.ResponseWriter, r *http.Request, key string) {
-	value, err := io.ReadAll(r.Body)
+	value, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxKVValueBytes))
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "read body", http.StatusBadRequest)
 		return
 	}
@@ -164,36 +174,58 @@ func (a *API) forwardToLeader(w http.ResponseWriter, r *http.Request, body []byt
 		return false
 	}
 
-	status, err := a.leaderForwarder.Forward(r.Context(), leaderID, r.Method, r.URL.Path, body)
+	forwarded, err := a.leaderForwarder.Forward(r.Context(), leaderID, r.Method, r.URL.Path, body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return true
 	}
-	w.WriteHeader(status)
+	for key, values := range forwarded.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(forwarded.StatusCode)
+	_, _ = w.Write(forwarded.Body)
 	return true
 }
 
-func (f *LeaderForwarder) Forward(ctx context.Context, leaderID, method, path string, body []byte) (int, error) {
+type ForwardResponse struct {
+	StatusCode int
+	Header     http.Header
+	Body       []byte
+}
+
+func (f *LeaderForwarder) Forward(ctx context.Context, leaderID, method, path string, body []byte) (ForwardResponse, error) {
 	addr, ok := f.httpAddrs[leaderID]
 	if !ok {
-		return 0, fmt.Errorf("unknown leader %s", leaderID)
+		return ForwardResponse{}, fmt.Errorf("unknown leader %s", leaderID)
 	}
 
 	base, err := url.Parse(addr)
 	if err != nil {
-		return 0, fmt.Errorf("parse leader address: %w", err)
+		return ForwardResponse{}, fmt.Errorf("parse leader address: %w", err)
 	}
 	target := base.ResolveReference(&url.URL{Path: path})
 
 	req, err := http.NewRequestWithContext(ctx, method, target.String(), bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return ForwardResponse{}, err
 	}
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return 0, err
+		return ForwardResponse{}, err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode, nil
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxForwardResponseBytes+1))
+	if err != nil {
+		return ForwardResponse{}, err
+	}
+	if len(respBody) > maxForwardResponseBytes {
+		respBody = respBody[:maxForwardResponseBytes]
+	}
+	return ForwardResponse{
+		StatusCode: resp.StatusCode,
+		Header:     resp.Header.Clone(),
+		Body:       respBody,
+	}, nil
 }

@@ -124,6 +124,35 @@ func TestHTTPWriteToFollowerForwardsToKnownLeader(t *testing.T) {
 	}
 }
 
+func TestHTTPWriteToFollowerPreservesLeaderErrorBody(t *testing.T) {
+	follower, err := raft.NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new follower: %v", err)
+	}
+	if _, err := follower.HandleAppendEntries(raft.AppendEntriesRequest{Term: 1, LeaderID: "n2"}); err != nil {
+		t.Fatalf("append entries: %v", err)
+	}
+
+	leader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "proposal timed out", http.StatusGatewayTimeout)
+	}))
+	defer leader.Close()
+
+	forwarder := NewLeaderForwarder("n1", map[string]string{"n2": leader.URL})
+	handler := NewHTTPHandlerWithForwarding(follower, singleNodeAppendClient{}, store.NewKVStateMachine(), forwarder)
+
+	req := httptest.NewRequest(http.MethodPut, "/kv/name", strings.NewReader("raft"))
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusGatewayTimeout)
+	}
+	if got := resp.Body.String(); got != "proposal timed out\n" {
+		t.Fatalf("body = %q, want leader error body", got)
+	}
+}
+
 func TestHTTPWriteToFollowerReturnsBadGatewayForUnknownLeader(t *testing.T) {
 	follower, err := raft.NewRaftNode("n1", nil, nil)
 	if err != nil {
@@ -141,6 +170,28 @@ func TestHTTPWriteToFollowerReturnsBadGatewayForUnknownLeader(t *testing.T) {
 
 	if resp.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want %d", resp.Code, http.StatusBadGateway)
+	}
+}
+
+func TestHTTPPutRejectsOversizedBody(t *testing.T) {
+	node, err := raft.NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeCandidate(); err != nil {
+		t.Fatalf("become candidate: %v", err)
+	}
+	if err := node.BecomeLeader(); err != nil {
+		t.Fatalf("become leader: %v", err)
+	}
+
+	handler := NewHTTPHandler(node, singleNodeAppendClient{}, store.NewKVStateMachine())
+	req := httptest.NewRequest(http.MethodPut, "/kv/name", strings.NewReader(strings.Repeat("x", maxKVValueBytes+1)))
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusRequestEntityTooLarge)
 	}
 }
 

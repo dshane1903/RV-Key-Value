@@ -21,16 +21,18 @@ type RaftNode struct {
 	nextIndex  map[string]uint64
 	matchIndex map[string]uint64
 
-	store StableStore
+	store       StableStore
+	commitReady chan struct{}
 }
 
 // NewRaftNode builds a node from persisted state when a store is provided.
 func NewRaftNode(id string, peers []string, store StableStore) (*RaftNode, error) {
 	node := &RaftNode{
-		id:    id,
-		peers: append([]string(nil), peers...),
-		state: Follower,
-		store: store,
+		id:          id,
+		peers:       append([]string(nil), peers...),
+		state:       Follower,
+		store:       store,
+		commitReady: make(chan struct{}, 1),
 	}
 
 	if store != nil {
@@ -98,6 +100,10 @@ func (n *RaftNode) CommitIndex() uint64 {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.commitIndex
+}
+
+func (n *RaftNode) CommitReady() <-chan struct{} {
+	return n.commitReady
 }
 
 func (n *RaftNode) LastApplied() uint64 {
@@ -199,6 +205,20 @@ func (n *RaftNode) RequestVote(req RequestVoteRequest) (RequestVoteResponse, err
 	return resp, n.persistLocked()
 }
 
+func (n *RaftNode) PreVote(req PreVoteRequest) (PreVoteResponse, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	resp := PreVoteResponse{Term: n.currentTerm}
+	if req.Term < n.currentTerm {
+		return resp, nil
+	}
+
+	logIsFreshEnough := IsLogAtLeastUpToDate(req.LastLogIndex, req.LastLogTerm, lastLogIndex(n.log), lastLogTerm(n.log))
+	resp.VoteGranted = logIsFreshEnough
+	return resp, nil
+}
+
 func (n *RaftNode) HandleAppendEntries(req AppendEntriesRequest) (AppendEntriesResponse, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -224,37 +244,22 @@ func (n *RaftNode) HandleAppendEntries(req AppendEntriesRequest) (AppendEntriesR
 	n.state = Follower
 	n.leaderID = req.LeaderID
 
-	if req.PrevLogIndex > 0 {
-		if req.PrevLogIndex > uint64(len(n.log)) || n.log[req.PrevLogIndex-1].Term != req.PrevLogTerm {
-			resp.Term = n.currentTerm
-			if changed {
-				return resp, n.persistLocked()
-			}
-			return resp, nil
+	logChanged, err := n.appendEntriesToLogLocked(req.PrevLogIndex, req.PrevLogTerm, req.Entries)
+	if err != nil {
+		resp.Term = n.currentTerm
+		if changed {
+			return resp, n.persistLocked()
 		}
+		return resp, nil
 	}
-
-	next := req.PrevLogIndex + 1
-	for i, entry := range req.Entries {
-		entry.Index = next + uint64(i)
-		if entry.Index <= uint64(len(n.log)) {
-			local := n.log[entry.Index-1]
-			if local.Term != entry.Term {
-				n.log = n.log[:entry.Index-1]
-				n.log = append(n.log, normalizeEntries(entry.Index, req.Entries[i:])...)
-				changed = true
-				break
-			}
-			continue
-		}
-
-		n.log = append(n.log, normalizeEntries(entry.Index, req.Entries[i:])...)
-		changed = true
-		break
-	}
+	changed = changed || logChanged
 
 	if req.LeaderCommit > n.commitIndex {
-		n.commitIndex = min(req.LeaderCommit, lastLogIndex(n.log))
+		nextCommit := min(req.LeaderCommit, lastLogIndex(n.log))
+		if nextCommit > n.commitIndex {
+			n.commitIndex = nextCommit
+			n.signalCommitReadyLocked()
+		}
 	}
 
 	resp.Term = n.currentTerm
@@ -343,14 +348,10 @@ func (n *RaftNode) ApplyCommitted(sm StateMachine) error {
 	}
 }
 
-// AppendEntries applies the Raft log consistency rule and appends entries after prevLogIndex.
-func (n *RaftNode) AppendEntries(prevLogIndex, prevLogTerm uint64, entries []LogEntry) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
+func (n *RaftNode) appendEntriesToLogLocked(prevLogIndex, prevLogTerm uint64, entries []LogEntry) (bool, error) {
 	if prevLogIndex > 0 {
 		if prevLogIndex > uint64(len(n.log)) || n.log[prevLogIndex-1].Term != prevLogTerm {
-			return ErrLogInconsistent{PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm}
+			return false, ErrLogInconsistent{PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm}
 		}
 	}
 
@@ -362,16 +363,16 @@ func (n *RaftNode) AppendEntries(prevLogIndex, prevLogTerm uint64, entries []Log
 			if local.Term != entry.Term {
 				n.log = n.log[:entry.Index-1]
 				n.log = append(n.log, normalizeEntries(entry.Index, entries[i:])...)
-				return n.persistLocked()
+				return true, nil
 			}
 			continue
 		}
 
 		n.log = append(n.log, normalizeEntries(entry.Index, entries[i:])...)
-		return n.persistLocked()
+		return true, nil
 	}
 
-	return n.persistLocked()
+	return false, nil
 }
 
 func (n *RaftNode) persistLocked() error {
@@ -435,8 +436,16 @@ func (n *RaftNode) advanceCommitLocked() {
 		}
 		if replicated >= majority(len(n.peers)+1) {
 			n.commitIndex = index
+			n.signalCommitReadyLocked()
 			return
 		}
+	}
+}
+
+func (n *RaftNode) signalCommitReadyLocked() {
+	select {
+	case n.commitReady <- struct{}{}:
+	default:
 	}
 }
 

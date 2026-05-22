@@ -37,6 +37,38 @@ func fromProtoRequestVoteResponse(resp *raftkvpb.RequestVoteResponse) raft.Reque
 	}
 }
 
+func toProtoPreVoteRequest(req raft.PreVoteRequest) *raftkvpb.PreVoteRequest {
+	return &raftkvpb.PreVoteRequest{
+		Term:         req.Term,
+		CandidateId:  req.CandidateID,
+		LastLogIndex: req.LastLogIndex,
+		LastLogTerm:  req.LastLogTerm,
+	}
+}
+
+func fromProtoPreVoteRequest(req *raftkvpb.PreVoteRequest) raft.PreVoteRequest {
+	return raft.PreVoteRequest{
+		Term:         req.GetTerm(),
+		CandidateID:  req.GetCandidateId(),
+		LastLogIndex: req.GetLastLogIndex(),
+		LastLogTerm:  req.GetLastLogTerm(),
+	}
+}
+
+func toProtoPreVoteResponse(resp raft.PreVoteResponse) *raftkvpb.PreVoteResponse {
+	return &raftkvpb.PreVoteResponse{
+		Term:        resp.Term,
+		VoteGranted: resp.VoteGranted,
+	}
+}
+
+func fromProtoPreVoteResponse(resp *raftkvpb.PreVoteResponse) raft.PreVoteResponse {
+	return raft.PreVoteResponse{
+		Term:        resp.GetTerm(),
+		VoteGranted: resp.GetVoteGranted(),
+	}
+}
+
 func toProtoAppendEntriesRequest(req raft.AppendEntriesRequest) *raftkvpb.AppendEntriesRequest {
 	return &raftkvpb.AppendEntriesRequest{
 		Term:         req.Term,

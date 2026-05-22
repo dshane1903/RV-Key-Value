@@ -42,6 +42,13 @@ func (c *testCluster) RequestVote(_ context.Context, peerID string, req RequestV
 	return c.nodes[peerID].RequestVote(req)
 }
 
+func (c *testCluster) PreVote(_ context.Context, peerID string, req PreVoteRequest) (PreVoteResponse, error) {
+	if c.down[peerID] {
+		return PreVoteResponse{}, errors.New("peer unavailable")
+	}
+	return c.nodes[peerID].PreVote(req)
+}
+
 func (c *testCluster) AppendEntries(_ context.Context, peerID string, req AppendEntriesRequest) (AppendEntriesResponse, error) {
 	if c.down[peerID] {
 		return AppendEntriesResponse{}, errors.New("peer unavailable")
@@ -88,6 +95,9 @@ func TestThreeNodeClusterReElectsAfterLeaderUnavailable(t *testing.T) {
 	}
 	if !won {
 		t.Fatal("first election won = false, want true")
+	}
+	if err := cluster.nodes["n1"].ReplicateOnce(context.Background(), cluster); err != nil {
+		t.Fatalf("initial heartbeat: %v", err)
 	}
 
 	cluster.down["n1"] = true

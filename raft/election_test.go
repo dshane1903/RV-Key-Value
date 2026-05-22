@@ -3,21 +3,34 @@ package raft
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 )
 
 type fakeVoteClient struct {
+	mu        sync.Mutex
 	responses map[string]RequestVoteResponse
 	errs      map[string]error
 	requests  []RequestVoteRequest
 }
 
 func (f *fakeVoteClient) RequestVote(_ context.Context, peerID string, req RequestVoteRequest) (RequestVoteResponse, error) {
+	f.mu.Lock()
 	f.requests = append(f.requests, req)
+	f.mu.Unlock()
+
 	if err := f.errs[peerID]; err != nil {
 		return RequestVoteResponse{}, err
 	}
 	return f.responses[peerID], nil
+}
+
+func (f *fakeVoteClient) PreVote(_ context.Context, peerID string, req PreVoteRequest) (PreVoteResponse, error) {
+	if err := f.errs[peerID]; err != nil {
+		return PreVoteResponse{}, err
+	}
+	return PreVoteResponse{VoteGranted: true}, nil
 }
 
 func TestStartElectionBecomesLeaderWithMajority(t *testing.T) {
@@ -102,6 +115,35 @@ func TestStartElectionToleratesFailedPeer(t *testing.T) {
 	}
 }
 
+func TestStartElectionRequestsVotesConcurrently(t *testing.T) {
+	node, err := NewRaftNode("n1", []string{"n2", "n3"}, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+
+	client := delayedVoteClient{
+		delays: map[string]time.Duration{
+			"n2": 300 * time.Millisecond,
+		},
+		responses: map[string]RequestVoteResponse{
+			"n2": {Term: 1, VoteGranted: false},
+			"n3": {Term: 1, VoteGranted: true},
+		},
+	}
+
+	start := time.Now()
+	won, err := node.StartElection(context.Background(), client)
+	if err != nil {
+		t.Fatalf("start election: %v", err)
+	}
+	if !won {
+		t.Fatal("won = false, want true")
+	}
+	if elapsed := time.Since(start); elapsed >= 250*time.Millisecond {
+		t.Fatalf("election took %s, slow peer appears to have blocked majority", elapsed)
+	}
+}
+
 func TestStartElectionSingleNodeBecomesLeader(t *testing.T) {
 	node, err := NewRaftNode("n1", nil, nil)
 	if err != nil {
@@ -118,4 +160,26 @@ func TestStartElectionSingleNodeBecomesLeader(t *testing.T) {
 	if got := node.State(); got != Leader {
 		t.Fatalf("state = %s, want %s", got, Leader)
 	}
+}
+
+type delayedVoteClient struct {
+	delays    map[string]time.Duration
+	responses map[string]RequestVoteResponse
+}
+
+func (d delayedVoteClient) RequestVote(ctx context.Context, peerID string, req RequestVoteRequest) (RequestVoteResponse, error) {
+	if delay := d.delays[peerID]; delay > 0 {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return RequestVoteResponse{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return d.responses[peerID], nil
+}
+
+func (d delayedVoteClient) PreVote(_ context.Context, peerID string, req PreVoteRequest) (PreVoteResponse, error) {
+	return PreVoteResponse{VoteGranted: true}, nil
 }

@@ -3,6 +3,7 @@ package raft
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 type fakeStateMachine struct {
@@ -83,5 +84,54 @@ func TestApplyCommittedStopsOnStateMachineError(t *testing.T) {
 	}
 	if got := node.LastApplied(); got != 0 {
 		t.Fatalf("lastApplied = %d, want 0", got)
+	}
+}
+
+func TestCommitReadySignalsLeaderCommit(t *testing.T) {
+	node, err := NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeCandidate(); err != nil {
+		t.Fatalf("become candidate: %v", err)
+	}
+	if err := node.BecomeLeader(); err != nil {
+		t.Fatalf("become leader: %v", err)
+	}
+
+	if _, err := node.AppendLocal([]byte("set a 1")); err != nil {
+		t.Fatalf("append local: %v", err)
+	}
+
+	select {
+	case <-node.CommitReady():
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("commit ready signal timed out")
+	}
+}
+
+func TestCommitReadySignalsFollowerCommitFromAppendEntries(t *testing.T) {
+	node, err := NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+
+	resp, err := node.HandleAppendEntries(AppendEntriesRequest{
+		Term:         1,
+		LeaderID:     "n2",
+		Entries:      []LogEntry{{Term: 1, Command: []byte("set a 1")}},
+		LeaderCommit: 1,
+	})
+	if err != nil {
+		t.Fatalf("handle append entries: %v", err)
+	}
+	if !resp.Success {
+		t.Fatal("success = false, want true")
+	}
+
+	select {
+	case <-node.CommitReady():
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("commit ready signal timed out")
 	}
 }

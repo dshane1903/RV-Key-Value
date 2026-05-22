@@ -146,7 +146,7 @@ func run() error {
 		loopErrs <- node.RunHeartbeatLoop(ctx, appendClient, raft.DefaultHeartbeatInterval)
 	}()
 	go func() {
-		loopErrs <- applyCommittedLoop(ctx, node, kvStateMachine, 25*time.Millisecond)
+		loopErrs <- applyCommittedLoop(ctx, node, kvStateMachine)
 	}()
 	go logNodeState(ctx, node, metrics, 500*time.Millisecond)
 
@@ -203,18 +203,15 @@ func parsePeers(value string) ([]string, map[string]string, error) {
 	return ids, addrs, nil
 }
 
-func applyCommittedLoop(ctx context.Context, node *raft.RaftNode, stateMachine raft.StateMachine, interval time.Duration) error {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
+func applyCommittedLoop(ctx context.Context, node *raft.RaftNode, stateMachine raft.StateMachine) error {
 	for {
+		if err := node.ApplyCommitted(stateMachine); err != nil {
+			return err
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
-			if err := node.ApplyCommitted(stateMachine); err != nil {
-				return err
-			}
+		case <-node.CommitReady():
 		}
 	}
 }

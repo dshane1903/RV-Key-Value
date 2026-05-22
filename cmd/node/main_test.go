@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/shaneduncan/rv-key-value/raft"
+)
 
 func TestParsePeers(t *testing.T) {
 	ids, addrs, err := parsePeers("n2=localhost:9002,n3=localhost:9003")
@@ -34,4 +41,52 @@ func TestParsePeersRejectsDuplicatePeer(t *testing.T) {
 	if err == nil {
 		t.Fatal("parse peers err = nil, want error")
 	}
+}
+
+func TestApplyCommittedLoopAppliesOnCommitSignal(t *testing.T) {
+	node, err := raft.NewRaftNode("n1", nil, nil)
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := node.BecomeCandidate(); err != nil {
+		t.Fatalf("become candidate: %v", err)
+	}
+	if err := node.BecomeLeader(); err != nil {
+		t.Fatalf("become leader: %v", err)
+	}
+
+	stateMachine := &notifyingStateMachine{applied: make(chan raft.LogEntry, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	errs := make(chan error, 1)
+	go func() {
+		errs <- applyCommittedLoop(ctx, node, stateMachine)
+	}()
+
+	entry, err := node.AppendLocal([]byte("set a 1"))
+	if err != nil {
+		t.Fatalf("append local: %v", err)
+	}
+
+	select {
+	case applied := <-stateMachine.applied:
+		if applied.Index != entry.Index {
+			t.Fatalf("applied index = %d, want %d", applied.Index, entry.Index)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for applied entry")
+	}
+
+	cancel()
+	if err := <-errs; !errors.Is(err, context.Canceled) {
+		t.Fatalf("apply loop err = %v, want context.Canceled", err)
+	}
+}
+
+type notifyingStateMachine struct {
+	applied chan raft.LogEntry
+}
+
+func (n *notifyingStateMachine) Apply(entry raft.LogEntry) error {
+	n.applied <- entry
+	return nil
 }

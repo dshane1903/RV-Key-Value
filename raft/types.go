@@ -39,6 +39,20 @@ type RequestVoteResponse struct {
 	VoteGranted bool
 }
 
+// PreVoteRequest asks peers whether they would vote for a future election term.
+type PreVoteRequest struct {
+	Term         uint64
+	CandidateID  string
+	LastLogIndex uint64
+	LastLogTerm  uint64
+}
+
+// PreVoteResponse reports whether the peer would vote without mutating term or vote state.
+type PreVoteResponse struct {
+	Term        uint64
+	VoteGranted bool
+}
+
 // AppendEntriesRequest is sent by leaders for heartbeats and log replication.
 type AppendEntriesRequest struct {
 	Term         uint64

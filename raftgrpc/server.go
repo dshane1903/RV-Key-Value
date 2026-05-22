@@ -30,6 +30,14 @@ func (s *Server) RequestVote(ctx context.Context, req *raftkvpb.RequestVoteReque
 	return toProtoRequestVoteResponse(resp), nil
 }
 
+func (s *Server) PreVote(ctx context.Context, req *raftkvpb.PreVoteRequest) (*raftkvpb.PreVoteResponse, error) {
+	resp, err := s.node.PreVote(fromProtoPreVoteRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return toProtoPreVoteResponse(resp), nil
+}
+
 func (s *Server) AppendEntries(ctx context.Context, req *raftkvpb.AppendEntriesRequest) (*raftkvpb.AppendEntriesResponse, error) {
 	resp, err := s.node.HandleAppendEntries(fromProtoAppendEntriesRequest(req))
 	if err != nil {

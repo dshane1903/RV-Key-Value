@@ -52,6 +52,13 @@ func (c *httpTestCluster) RequestVote(_ context.Context, peerID string, req raft
 	return c.nodes[peerID].RequestVote(req)
 }
 
+func (c *httpTestCluster) PreVote(_ context.Context, peerID string, req raft.PreVoteRequest) (raft.PreVoteResponse, error) {
+	if c.down[peerID] {
+		return raft.PreVoteResponse{}, errors.New("peer unavailable")
+	}
+	return c.nodes[peerID].PreVote(req)
+}
+
 func (c *httpTestCluster) AppendEntries(_ context.Context, peerID string, req raft.AppendEntriesRequest) (raft.AppendEntriesResponse, error) {
 	if c.down[peerID] {
 		return raft.AppendEntriesResponse{}, errors.New("peer unavailable")

@@ -1,9 +1,6 @@
 package raft
 
-import (
-	"errors"
-	"testing"
-)
+import "testing"
 
 type memoryStore struct {
 	state PersistentState
@@ -89,10 +86,18 @@ func TestAppendEntriesRejectsInconsistentPreviousEntry(t *testing.T) {
 		t.Fatalf("append local: %v", err)
 	}
 
-	err = node.AppendEntries(1, 99, []LogEntry{{Term: 2, Command: []byte("set b 2")}})
-	var inconsistent ErrLogInconsistent
-	if !errors.As(err, &inconsistent) {
-		t.Fatalf("append err = %v, want ErrLogInconsistent", err)
+	resp, err := node.HandleAppendEntries(AppendEntriesRequest{
+		Term:         2,
+		LeaderID:     "n2",
+		PrevLogIndex: 1,
+		PrevLogTerm:  99,
+		Entries:      []LogEntry{{Term: 2, Command: []byte("set b 2")}},
+	})
+	if err != nil {
+		t.Fatalf("handle append entries: %v", err)
+	}
+	if resp.Success {
+		t.Fatal("success = true, want false")
 	}
 }
 
@@ -352,12 +357,21 @@ func TestAppendEntriesTruncatesConflictsAndAppends(t *testing.T) {
 		t.Fatalf("append local 2: %v", err)
 	}
 
-	err = node.AppendEntries(1, 1, []LogEntry{
-		{Term: 3, Command: []byte("set b 2")},
-		{Term: 3, Command: []byte("set c 3")},
+	resp, err := node.HandleAppendEntries(AppendEntriesRequest{
+		Term:         3,
+		LeaderID:     "n2",
+		PrevLogIndex: 1,
+		PrevLogTerm:  1,
+		Entries: []LogEntry{
+			{Term: 3, Command: []byte("set b 2")},
+			{Term: 3, Command: []byte("set c 3")},
+		},
 	})
 	if err != nil {
-		t.Fatalf("append entries: %v", err)
+		t.Fatalf("handle append entries: %v", err)
+	}
+	if !resp.Success {
+		t.Fatal("success = false, want true")
 	}
 
 	log := node.Log()
